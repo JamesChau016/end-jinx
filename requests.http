@@ -1,0 +1,22 @@
+### Basic GET
+GET http://localhost:8000/hello HTTP/1.1
+Host: localhost:8000
+
+### GET with headers
+GET http://localhost:8000/foo HTTP/1.1
+Host: localhost:8000
+Accept: application/json
+
+### POST with body
+POST http://localhost:8000/echo HTTP/1.1
+Host: localhost:8000
+Content-Type: application/json
+Content-Length: 27
+
+{"message": "hello world"}
+
+### Malformed request line (should get 400)
+GARBAGE / HTTP/1.1
+Host: localhost:8000
+
+### Empty request (should get 400, not hang/crash)
