@@ -1,5 +1,4 @@
 namespace EndJinx.Parser;
-using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using EndJinx.Exceptions;
@@ -14,7 +13,6 @@ public class RequestParser
     {
         var processedBytes = new List<byte>();
         int contentLength = 0;
-        string? contentType = null;
 
         byte[] crlfCrlf = new byte[] { 13, 10, 13, 10 }; // \r\n\r\n
 
@@ -33,14 +31,16 @@ public class RequestParser
                 processedBytes.Add(buffer[i]);
             }
 
-            if (processedBytes.Count > MAX_HEADER_SIZE)
-            {
-                Console.WriteLine("Error: request header too large");
-                throw new Exception("Error: request header too large");
-            }
-
             // look for end of headers in raw bytes
             int headerEnd = IndexOfSequence(processedBytes, crlfCrlf);
+            
+            if (headerEnd > MAX_HEADER_SIZE
+                || (headerEnd < 0 && processedBytes.Count > MAX_HEADER_SIZE))
+            {
+                Console.WriteLine("Error: request header too large");
+                throw new BadRequestException("Error: request header too large");
+            }
+
             if (headerEnd >= 0)
             {
                 // parse headers from bytes up to headerEnd
@@ -52,12 +52,10 @@ public class RequestParser
                     if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
                     {
                         var value = line.Substring("Content-Length:".Length).Trim();
-                        int.TryParse(value, out contentLength);
-                    }
-
-                    if (line.StartsWith("Content-Type:", StringComparison.OrdinalIgnoreCase))
-                    {
-                        contentType = line.Substring("Content-Type:".Length).Trim();
+                        if (!int.TryParse(value, out contentLength) || contentLength < 0)
+                        {
+                            throw new BadRequestException("Error: invalid content length value");
+                        }
                     }
                 }
 
@@ -71,7 +69,10 @@ public class RequestParser
                     int toRead = Math.Min(1024, remaining);
                     var tmp = new byte[toRead];
                     int n = await stream.ReadAsync(tmp.AsMemory());
-                    if (n == 0) break; // premature EOF
+                    if (n == 0)
+                    {
+                        throw new BadRequestException("Error: incomplete request body");
+                    }
                     for (int i = 0; i < n; i++) processedBytes.Add(tmp[i]);
                     remaining -= n;
                 }
@@ -96,7 +97,7 @@ public class RequestParser
         var body = requestParts.Length > 1 ? requestParts[1] : string.Empty;
 
         var lines = request.Split("\r\n", StringSplitOptions.None);
-        var headers = new Dictionary<String,String>();
+        var headers = new Dictionary<String,String>(StringComparer.OrdinalIgnoreCase);
 
         var reqLineIdx = Array.FindIndex(lines, line => !string.IsNullOrWhiteSpace(line));
         if (reqLineIdx<0)

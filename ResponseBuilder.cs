@@ -1,6 +1,4 @@
 namespace EndJinx.Builder;
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
 
 public record HttpResponse(
@@ -20,8 +18,9 @@ public class ResponseBuilder
         // Set Content-Length automatically
         var allHeaders = new Dictionary<string, string>(response.Headers)
         {
-            { "Content-Length", response.Body.Length.ToString() }
-        };
+            { "Content-Length", response.Body.Length.ToString() },
+            { "Connection", "close"}
+        }; 
         
         var headerLines = string.Join("\r\n", allHeaders.Select(h => $"{h.Key}: {h.Value}"));
         var headerText = $"{statusLine}{headerLines}\r\n\r\n";

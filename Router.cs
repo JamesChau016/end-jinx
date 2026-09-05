@@ -24,6 +24,17 @@ public class Router
     private HttpResponse HandleEcho(Request request)
     {
         var body = Encoding.UTF8.GetString(request.Body);
+        if (!request.Headers.TryGetValue("Content-Length", out var contentLength)
+            || !int.TryParse(contentLength, out int declaredLen)
+            || declaredLen < 0)
+        {
+            throw new BadRequestException("Error: invalid or missing content length");
+        }
+
+        if (request.Body.Length != declaredLen)
+        {   
+            throw new BadRequestException("Error: declared length and body length don't match");
+        }
         var responseBody = Encoding.UTF8.GetBytes(body);
         
         return new HttpResponse(
