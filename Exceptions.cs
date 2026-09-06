@@ -19,6 +19,12 @@ public class BadRequestException : HttpException
         : base(400, "Bad Request", message) { }
 }
 
+public class ContentTooLargeException : HttpException
+{
+    public ContentTooLargeException(string message)
+        : base(413, "Content Too Large", message) { }
+}
+
 public class NotFoundException : HttpException
 {
     public NotFoundException(string message)

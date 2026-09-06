@@ -8,6 +8,7 @@ public record Request(string Method, string Path, string Version, Dictionary<str
 public class RequestParser
 {
     private const int MAX_HEADER_SIZE = 8 * 1024;
+    private const int MAX_BODY_SIZE = 1024 * 1024;
 
     public async Task<byte[]> ReadAllRequestsAsync(NetworkStream stream)
     {
@@ -55,6 +56,9 @@ public class RequestParser
                         if (!int.TryParse(value, out contentLength) || contentLength < 0)
                         {
                             throw new BadRequestException("Error: invalid content length value");
+                        }
+                        if (contentLength > MAX_BODY_SIZE){
+                            throw new ContentTooLargeException("Error: Body too large");
                         }
                     }
                 }
@@ -123,12 +127,37 @@ public class RequestParser
             headers[key] = val;
         }
 
+        if (!headers.TryGetValue("Content-Length", out var contentLengthText))
+        {
+            headers["Content-Length"]="0";
+        }
+
+        if (!int.TryParse(contentLengthText, out int contentLength) || contentLength < 0)
+        {
+            throw new BadRequestException("Error: invalid content length value");
+        }
+
+        var bodyBytes = Encoding.UTF8.GetBytes(body);
+        
+        if (bodyBytes.Length < contentLength)
+        {
+            throw new BadRequestException("Error: Body length less than content length");
+        }
+        else if (bodyBytes.Length > contentLength)
+        {
+            throw new BadRequestException("Error: Body length greater than content length");
+        }
+        if (bodyBytes.Length > MAX_BODY_SIZE)
+        {
+            throw new ContentTooLargeException("Error: Body too large");
+        }
+
         return new Request(
             Method: method,
             Path: path,
             Version: version,
             Headers: headers,
-            Body: Encoding.UTF8.GetBytes(body)
+            Body: bodyBytes
         );
     }
 
