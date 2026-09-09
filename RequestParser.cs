@@ -130,6 +130,7 @@ public class RequestParser
         if (!headers.TryGetValue("Content-Length", out var contentLengthText))
         {
             headers["Content-Length"]="0";
+            contentLengthText="0";
         }
 
         if (!int.TryParse(contentLengthText, out int contentLength) || contentLength < 0)
