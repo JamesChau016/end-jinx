@@ -9,43 +9,29 @@ public class RequestParser
 {
     private const int MAX_HEADER_SIZE = 8 * 1024;
     private const int MAX_BODY_SIZE = 1024 * 1024;
+    private readonly List<byte> pendingBytes = new();
 
     public async Task<byte[]> ReadAllRequestsAsync(NetworkStream stream)
     {
-        var processedBytes = new List<byte>();
         int contentLength = 0;
 
         byte[] crlfCrlf = new byte[] { 13, 10, 13, 10 }; // \r\n\r\n
 
         while (true)
         {
-            var buffer = new byte[1024];
-            int bytes = await stream.ReadAsync(buffer.AsMemory());
-
-            if (bytes == 0)
-            {
-                break;
-            }
-
-            for (int i = 0; i < bytes; i++)
-            {
-                processedBytes.Add(buffer[i]);
-            }
-
             // look for end of headers in raw bytes
-            int headerEnd = IndexOfSequence(processedBytes, crlfCrlf);
+            int headerEnd = IndexOfSequence(pendingBytes, crlfCrlf);
             
             if (headerEnd > MAX_HEADER_SIZE
-                || (headerEnd < 0 && processedBytes.Count > MAX_HEADER_SIZE))
-            {
-                Console.WriteLine("Error: request header too large");
+                || (headerEnd < 0 && pendingBytes.Count > MAX_HEADER_SIZE))
+            { 
                 throw new BadRequestException("Error: request header too large");
             }
 
             if (headerEnd >= 0)
             {
                 // parse headers from bytes up to headerEnd
-                var headerBytes = processedBytes.GetRange(0, headerEnd).ToArray();
+                var headerBytes = pendingBytes.GetRange(0, headerEnd).ToArray();
                 var headersText = Encoding.UTF8.GetString(headerBytes);
 
                 foreach (var line in headersText.Split("\r\n"))
@@ -63,29 +49,43 @@ public class RequestParser
                     }
                 }
 
-                // compute how many body bytes we already have after header terminator
-                int bodyAlready = processedBytes.Count - (headerEnd + 4);
-                int remaining = contentLength - bodyAlready;
+                int requestEnd = headerEnd + 4 + contentLength;
+                int remaining = requestEnd - pendingBytes.Count;
 
                 // read remaining body bytes, if any
                 while (remaining > 0)
                 {
                     int toRead = Math.Min(1024, remaining);
                     var tmp = new byte[toRead];
-                    int n = await stream.ReadAsync(tmp.AsMemory());
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    int n = await stream.ReadAsync(tmp.AsMemory(), cts.Token);
                     if (n == 0)
                     {
                         throw new BadRequestException("Error: incomplete request body");
                     }
-                    for (int i = 0; i < n; i++) processedBytes.Add(tmp[i]);
+                    for (int i = 0; i < n; i++) pendingBytes.Add(tmp[i]);
                     remaining -= n;
                 }
 
-                break; // we have headers and (if any) the full body
+                var requestBytes = pendingBytes.Take(requestEnd).ToArray();
+                pendingBytes.RemoveRange(0, requestEnd);
+                return requestBytes;
+            }
+
+            using var headerCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var buffer = new byte[1024];
+            int bytes = await stream.ReadAsync(buffer.AsMemory(), headerCts.Token);
+
+            if (bytes == 0)
+            {
+                return Array.Empty<byte>();
+            }
+
+            for (int i = 0; i < bytes; i++)
+            {
+                pendingBytes.Add(buffer[i]);
             }
         }
-
-        return processedBytes.ToArray();
     }
 
     public Request ParseReq(byte[] bytes)
@@ -121,7 +121,7 @@ public class RequestParser
         foreach (var line in lines.Skip(reqLineIdx+1)){
             if (string.IsNullOrWhiteSpace(line)) break; // reached blank line before body
             int idx = line.IndexOf(":");
-            if (idx<1) throw new BadRequestException($"Malformed header: {line}");
+            if (idx<1) throw new BadRequestException($"ErrorL Malformed header: {line}");
             var key = line[..idx].Trim();
             var val = line[(idx+1)..].Trim();
             headers[key] = val;

@@ -11,7 +11,7 @@ public record HttpResponse(
 public class ResponseBuilder
 {
 
-    public byte[] BuildHttpResponse(HttpResponse response)
+    public byte[] BuildHttpResponse(HttpResponse response, bool keepAlive)
     {
         var statusLine = $"HTTP/1.1 {response.StatusCode} {response.StatusMessage}\r\n";
         
@@ -19,7 +19,7 @@ public class ResponseBuilder
         var allHeaders = new Dictionary<string, string>(response.Headers)
         {
             { "Content-Length", response.Body.Length.ToString() },
-            { "Connection", "close"}
+            { "Connection", keepAlive ? "keep-alive" : "close"}
         }; 
         
         var headerLines = string.Join("\r\n", allHeaders.Select(h => $"{h.Key}: {h.Value}"));
@@ -39,6 +39,6 @@ public class ResponseBuilder
             Headers: new() { { "Content-Type", "text/plain" } },
             Body: Encoding.UTF8.GetBytes(message)
         );
-        return BuildHttpResponse(errorResponse);
+        return BuildHttpResponse(errorResponse, false);
     }
 }
