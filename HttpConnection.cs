@@ -4,9 +4,17 @@ using EndJinx.Parser;
 using EndJinx.Router;
 using EndJinx.Builder;
 using EndJinx.Exceptions;
+using EndJinx.Logging;
 
 public class HttpConnection
 {
+    private readonly ILogger logger;
+
+    public HttpConnection(ILogger? logger = null)
+    {
+        this.logger = logger ?? new ConsoleLogger();
+    }
+
     public async Task handleClient(TcpClient client)
     {
         using var tempClient = client;
@@ -16,7 +24,7 @@ public class HttpConnection
         {
             var parser = new RequestParser();
             var router = new Router();
-            var builder = new ResponseBuilder();
+            var builder = new ResponseBuilder(logger);
             while (true)
             {
                 var rawReq = await parser.ReadAllRequestsAsync(stream);
@@ -42,7 +50,7 @@ public class HttpConnection
         }
         catch (OperationCanceledException)
         {
-            Console.WriteLine("Client timed out.");
+            logger.Info("Client timed out.");
         }
         catch (HttpException httpExc)
         {
@@ -52,7 +60,7 @@ public class HttpConnection
         }
         catch (Exception exc)
         {
-            Console.WriteLine($"Connection error: {exc}");
+            logger.Error("Connection error", exc);
             var responseBuilder = new ResponseBuilder();
             var respBytes = responseBuilder.BuildErrorResponse(500, "Internal Server Error", "An unexpected error occurred");
             await stream.WriteAsync(respBytes.AsMemory());

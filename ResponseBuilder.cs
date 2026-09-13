@@ -1,5 +1,6 @@
 namespace EndJinx.Builder;
 using System.Text;
+using EndJinx.Logging;
 
 public record HttpResponse(
     int StatusCode,
@@ -10,6 +11,12 @@ public record HttpResponse(
 
 public class ResponseBuilder
 {
+    private readonly ILogger logger;
+
+    public ResponseBuilder(ILogger? logger = null)
+    {
+        this.logger = logger ?? new ConsoleLogger();
+    }
 
     public byte[] BuildHttpResponse(HttpResponse response, bool keepAlive)
     {
@@ -28,7 +35,7 @@ public class ResponseBuilder
         var headerBytes = Encoding.UTF8.GetBytes(headerText);
         var responseBytes = headerBytes.Concat(response.Body).ToArray();
         
-        Console.WriteLine(headerText.Trim());
+        logger.Info(headerText.Trim());
         return responseBytes;
     }
     public byte[] BuildErrorResponse(int statusCode, string statusMessage, string message)
