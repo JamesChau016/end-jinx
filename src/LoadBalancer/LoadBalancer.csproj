@@ -7,11 +7,4 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <ItemGroup>
-    <Compile Remove="EndJinx.Tests/**/*.cs" />
-    <Compile Remove="src/LoadBalancer/**/*.cs" />
-    <EmbeddedResource Remove="EndJinx.Tests/**/*.resx" />
-    <None Remove="EndJinx.Tests/**/*" />
-  </ItemGroup>
-
 </Project>
