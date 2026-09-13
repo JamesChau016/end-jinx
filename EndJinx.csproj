@@ -9,9 +9,8 @@
 
   <ItemGroup>
     <Compile Remove="EndJinx.Tests/**/*.cs" />
-    <Compile Remove="src/LoadBalancer/**/*.cs" />
+    <Compile Remove="src/**/*.cs" />
     <EmbeddedResource Remove="EndJinx.Tests/**/*.resx" />
     <None Remove="EndJinx.Tests/**/*" />
   </ItemGroup>
-
 </Project>
