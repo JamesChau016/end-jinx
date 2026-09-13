@@ -7,4 +7,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Remove="EndJinx.Tests/**/*.cs" />
+    <EmbeddedResource Remove="EndJinx.Tests/**/*.resx" />
+    <None Remove="EndJinx.Tests/**/*" />
+  </ItemGroup>
+
 </Project>
