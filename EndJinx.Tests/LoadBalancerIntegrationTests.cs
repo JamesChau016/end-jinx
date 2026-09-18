@@ -17,7 +17,7 @@ public class LoadBalancerIntegrationTests
 
         var backendEndpoint = (IPEndPoint)backendListener.LocalEndpoint;
         var proxyEndpoint = (IPEndPoint)proxyListener.LocalEndpoint;
-        var proxy = new TcpProxy("127.0.0.1", backendEndpoint.Port);
+        var proxy = new TcpProxy(new Backend("127.0.0.1", backendEndpoint.Port));
 
         var backendTask = AcceptBackendAndRespondAsync(backendListener);
         var proxyTask = AcceptProxyClientAsync(proxyListener, proxy);
