@@ -10,6 +10,10 @@ public class PoolSelector
 
     public PoolSelector(List<Backend> backendObjs)
     {
+        if (backendObjs.Count != backendObjs.Distinct().Count())
+        {
+            throw new ArgumentException("Backend endpoints must be unique.");
+        }
         _backends = new List<Backend>(backendObjs);
     }
 
