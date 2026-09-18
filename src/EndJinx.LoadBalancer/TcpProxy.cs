@@ -7,10 +7,10 @@ public sealed class TcpProxy
     private readonly string _backendHost;
     private readonly int _backendPort;
 
-    public TcpProxy(string backendHost, int backendPort)
+    public TcpProxy(Backend backendObj)
     {
-        _backendHost = backendHost;
-        _backendPort = backendPort;
+        _backendHost = backendObj.Host;
+        _backendPort = backendObj.Port;
     }
 
     public async Task HandleAsync(TcpClient client)
