@@ -6,11 +6,13 @@ public sealed class TcpProxy
 {
     private readonly string _backendHost;
     private readonly int _backendPort;
+    private readonly Action<Backend>? _backendFailureHandler;
 
-    public TcpProxy(Backend backendObj)
+    public TcpProxy(Backend backendObj, Action<Backend>? backendFailureHandler = null)
     {
         _backendHost = backendObj.Host;
         _backendPort = backendObj.Port;
+        _backendFailureHandler = backendFailureHandler;
     }
 
     public async Task HandleAsync(TcpClient client)
@@ -56,6 +58,7 @@ public sealed class TcpProxy
             catch (SocketException exception)
             {
                 Console.Error.WriteLine($"Backend connection failed: {exception.Message}");
+                _backendFailureHandler?.Invoke(new Backend(_backendHost, _backendPort));
             }
             catch (IOException exception)
             {

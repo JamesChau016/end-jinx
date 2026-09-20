@@ -12,8 +12,10 @@ List<Backend> pool = backendPorts
 
 var listener = new TcpListener(IPAddress.Any, listenPort);
 var selector = new PoolSelector(pool);
+int interval = 5;
 
 listener.Start();
+_ = PeriodicHealthCheckAsync(selector, pool, interval);
 Console.WriteLine($"Load balancer listening on port {listenPort}");
 
 while (true)
@@ -21,8 +23,38 @@ while (true)
     TcpClient client = await listener.AcceptTcpClientAsync();
     var backendObj = selector.Next();
     Console.WriteLine($"Forwarding TCP connections to {backendObj.Host}:{backendObj.Port}");
-    var proxy = new TcpProxy(backendObj);
+    var proxy = new TcpProxy(
+        backendObj,
+        failedBackend => selector.MarkUnHealthy(failedBackend)
+    );
     _ = Task.Run(() => proxy.HandleAsync(client));
+    
+}
+
+static async Task PeriodicHealthCheckAsync(PoolSelector selector, List<Backend> pool, int interval){
+
+    var healthCheck = new HealthCheck();
+
+    while (true)
+    {
+        foreach (var backend in pool)
+        {
+            var isHealthy = await healthCheck.CheckAsync(backend);
+
+            if (isHealthy){
+                if (!backend.IsHealthy){
+                    Console.WriteLine($"Backend port {backend.Port} recovered");
+                }
+                selector.MarkHealthy(backend);
+            }
+            else{
+                selector.MarkUnHealthy(backend);
+                Console.WriteLine($"Backend port {backend.Port} marked unhealthy");
+            }
+        }
+
+        await Task.Delay(TimeSpan.FromSeconds(interval));
+    }
 }
 
 static int ParsePort(string value, string name)
@@ -34,3 +66,5 @@ static int ParsePort(string value, string name)
 
     return port;
 }
+
+

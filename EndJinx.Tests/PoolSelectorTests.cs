@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Sockets;
 using EndJinx.LoadBalancer;
 
 namespace EndJinx.Tests;
@@ -73,6 +74,20 @@ public class PoolSelectorTests
         selector.MarkHealthy(new Backend("127.0.0.1", 8001));
 
         Assert.Equal(8001, selector.Next().Port);
+    }
+
+    [Fact]
+    public async Task TcpProxy_InvokesPassiveFailureCallback_WhenBackendConnectionFails()
+    {
+        var backend = new Backend("127.0.0.1", 65535, true);
+        Backend? failedBackend = null;
+        var proxy = new TcpProxy(backend, backendFailure => failedBackend = backendFailure);
+
+        using var client = new TcpClient();
+        await proxy.HandleAsync(client);
+
+        Assert.NotNull(failedBackend);
+        Assert.Equal(65535, failedBackend!.Port);
     }
 
     [Fact]
