@@ -1,6 +1,18 @@
 namespace EndJinx.LoadBalancer;
 
-public record Backend(string Host, int Port);
+public class Backend
+{
+    public string Host { get; }
+    public int Port { get; }
+    public bool IsHealthy { get; set; } = true;
+
+    public Backend(string host, int port, bool isHealthy = true)
+    {
+        Host = host;
+        Port = port;
+        IsHealthy = isHealthy;
+    }
+}
 
 public class PoolSelector
 {
@@ -14,7 +26,10 @@ public class PoolSelector
         {
             throw new ArgumentException("Backend endpoints must be unique.");
         }
-        _backends = new List<Backend>(backendObjs);
+
+        _backends = backendObjs
+            .Select(backend => new Backend(backend.Host, backend.Port, backend.IsHealthy))
+            .ToList();
     }
 
     public Backend Next()
@@ -25,9 +40,50 @@ public class PoolSelector
             {
                 throw new InvalidOperationException("Error: The backend pool is empty.");
             }
-            Backend backendObj = _backends[_next];
-            _next = (_next + 1) % _backends.Count;
-            return backendObj;
+
+            int attempts = 0;
+            while (attempts < _backends.Count)
+            {
+                var backend = _backends[_next];
+                if (backend.IsHealthy)
+                {
+                    _next = (_next + 1) % _backends.Count;
+                    return backend;
+                }
+
+                _next = (_next + 1) % _backends.Count;
+                attempts++;
+            }
+
+            throw new InvalidOperationException("Error: Can't connect to any backends.");
+        }
+    }
+
+    public Backend MarkHealthy(Backend backend)
+    {
+        return UpdateHealthState(backend, isHealthy: true);
+    }
+
+    public Backend MarkUnHealthy(Backend backend)
+    {
+        return UpdateHealthState(backend, isHealthy: false);
+    }
+
+    private Backend UpdateHealthState(Backend backend, bool isHealthy)
+    {
+        lock (_selectionLock)
+        {
+            int index = _backends.FindIndex(existing =>
+                existing.Host == backend.Host &&
+                existing.Port == backend.Port);
+
+            if (index < 0)
+            {
+                throw new ArgumentException("Backend is not part of this pool.", nameof(backend));
+            }
+
+            _backends[index].IsHealthy = isHealthy;
+            return _backends[index];
         }
     }
 }
