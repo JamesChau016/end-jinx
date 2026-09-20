@@ -56,6 +56,26 @@ public class PoolSelectorTests
     }
 
     [Fact]
+    public void Next_SkipsUnhealthyBackendsUntilTheyRecover()
+    {
+        var selector = new PoolSelector([
+            new Backend("127.0.0.1", 8000),
+            new Backend("127.0.0.1", 8001),
+            new Backend("127.0.0.1", 8002)
+        ]);
+
+        selector.MarkUnHealthy(new Backend("127.0.0.1", 8001));
+
+        Assert.Equal([8000, 8002, 8000], Enumerable.Range(0, 3)
+            .Select(_ => selector.Next().Port)
+            .ToArray());
+
+        selector.MarkHealthy(new Backend("127.0.0.1", 8001));
+
+        Assert.Equal(8001, selector.Next().Port);
+    }
+
+    [Fact]
     public void Next_IsThreadSafe()
     {
         var selector = new PoolSelector([
