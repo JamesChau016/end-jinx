@@ -1,115 +1,184 @@
 # EndJinx
 
-EndJinx is a small HTTP/1.1 web server written in C# over raw TCP. It is a
-learning project for understanding HTTP framing, parsing, connection
-lifecycle, concurrency, and response serialization without using Kestrel,
-ASP.NET Core, or `HttpListener`.
+EndJinx is a learning project containing two small C# networking applications:
+
+- A raw TCP HTTP/1.1 web server.
+- A Layer 4 TCP load balancer that proxies connections to a pool of web-server
+  instances.
+
+The project focuses on HTTP framing, parsing, connection lifecycle,
+concurrency, reverse-proxying, backend health, and load-balancing algorithms
+without using Kestrel, ASP.NET Core, `HttpListener`, or a proxy framework.
 
 ## Requirements
 
 - .NET SDK 10.0 or later
-- `curl` for the command-line examples and shell load test
+- `curl` for manual requests and load tests
 - PowerShell 5.1 or later for `load-test.ps1`
 
-## Current functionality
+## Features
 
-- Listens on `0.0.0.0:8000`.
-- Accepts multiple TCP clients concurrently.
-- Reads request headers until `\r\n\r\n`, even when headers arrive across
-  multiple network reads.
-- Reads request bodies using `Content-Length`.
-- Supports HTTP/1.1 keep-alive and multiple requests on one connection.
-- Closes idle or incomplete reads after five seconds.
+### HTTP server
+
+- Listens on `0.0.0.0:8000` by default; the port is configurable.
+- Handles multiple TCP clients concurrently.
+- Parses request headers and `Content-Length` request bodies.
+- Supports HTTP/1.1 keep-alive and multiple requests per connection.
+- Times out incomplete or idle reads after five seconds.
 - Limits headers to 8 KiB and request bodies to 1 MiB.
-- Returns well-formed error responses for malformed requests, oversized
-  bodies, missing routes, and unexpected server errors.
+- Returns `400`, `404`, `413`, and `500` responses for supported error cases.
+- Provides `GET /` and `POST /echo` routes.
 
-TLS is not implemented, so the server currently speaks plain HTTP only.
+TLS, static files, chunked transfer encoding, and richer HTTP methods are not
+implemented.
 
-## Routes
+### Load balancer
 
-| Method | Path            | Response                       |
-| ------ | --------------- | ------------------------------ |
-| `GET`  | `/`             | `200 OK` with `Hello, World!`  |
-| `POST` | `/echo`         | `200 OK` with the request body |
-| Any    | Any other route | `404 Not Found`                |
+- Listens on port `9000` by default.
+- Proxies raw TCP bytes in both directions between clients and backends.
+- Supports multiple backend ports supplied at startup.
+- Performs active health checks every five seconds.
+- Removes unhealthy backends and re-admits recovered backends.
+- Marks backends unhealthy after passive connection failures.
+- Tracks active TCP connections per backend.
+- Supports three selection strategies:
+  - `round-robin`: rotates through healthy backends.
+  - `random`: chooses a healthy backend randomly.
+  - `least-connections`: chooses the healthy backend with the fewest active
+    proxy connections.
 
-The server returns `400 Bad Request` for malformed HTTP or invalid body
-lengths, `413 Content Too Large` for bodies over 1 MiB, and
-`500 Internal Server Error` for unexpected failures.
+The load balancer is Layer 4: it routes connections and does not inspect HTTP
+paths or headers.
 
-## Project structure
+## File structure
 
 ```text
-EndJinx.csproj                 Main executable project
-Program.cs                     TCP listener and concurrent accept loop
-HttpConnection.cs              Per-client request/response loop
-RequestParser.cs               HTTP framing and request parsing
-ResponseBuilder.cs             HTTP response serialization
-Router.cs                      Method/path routing and response creation
-Exceptions.cs                  HTTP exception types and status codes
-Logger.cs                      Console logging abstraction
-EndJinx.Tests/                 Unit and integration tests
-  ServerTests.cs               Parser, router, and response tests
-  ConnectionIntegrationTests.cs Keep-alive and concurrent connection tests
-requests.http                 Sample requests for an HTTP client extension
-load-test.ps1                  Concurrent load test for PowerShell
-load-test.sh                   Concurrent load test for Bash and curl
-src/LoadBalancer/              Future load-balancer project scaffold
+EndJinx.csproj                         HTTP server project
+Program.cs                             HTTP server listener and accept loop
+HttpConnection.cs                      Per-client HTTP connection lifecycle
+RequestParser.cs                       HTTP request framing and parsing
+ResponseBuilder.cs                     HTTP response serialization
+Router.cs                              HTTP method/path routing
+Exceptions.cs                          HTTP exception types and status codes
+Logger.cs                              Console logging abstraction
+
+src/EndJinx.LoadBalancer/
+  EndJinx.LoadBalancer.csproj          Load balancer project
+  Program.cs                           Listener, strategy, and health-check setup
+  PoolSelector.cs                      Backend pool and selection strategies
+  TcpProxy.cs                          Bidirectional TCP proxy
+  HealthCheck.cs                       Active backend health checks
+
+EndJinx.Tests/
+  ServerTests.cs                       HTTP parser, router, and response tests
+  ConnectionIntegrationTests.cs        HTTP connection integration tests
+  LoadBalancerIntegrationTests.cs      TCP proxy integration tests
+  PoolSelectorTests.cs                 Pool, health, and strategy tests
+
+requests.http                          Sample HTTP requests for VS Code
+load-test.ps1                          PowerShell load test
+load-test.sh                           Bash and curl load test
+LEARNING_PLAN.md                       HTTP server learning plan
+LOAD_BALANCER_LEARNING_PLAN.md         Load balancer learning plan
 ```
 
-The load balancer is not implemented yet. Its learning plan is documented in
-`LOAD_BALANCER_LEARNING_PLAN.md`.
+## Build and automated tests
 
-## Run the server
+Run these commands from the repository root.
 
-From the repository root:
+Build the HTTP server:
 
-```bash
-dotnet run --project EndJinx.csproj
-```
-
-The server logs to the console and listens at `http://127.0.0.1:8000`.
-Stop it with `Ctrl+C`.
-
-## Try it with curl
-
-With the server running in another terminal:
-
-```bash
-curl -i http://127.0.0.1:8000/
-
-curl -i -X POST http://127.0.0.1:8000/echo \
-  -H "Content-Type: text/plain" \
-  --data "hello from EndJinx"
-
-curl -i http://127.0.0.1:8000/missing
-```
-
-The same examples, plus malformed-request examples, are in `requests.http`
-for use with an HTTP client extension in VS Code.
-
-## Build and test
-
-Build the server:
-
-```bash
+```powershell
 dotnet build EndJinx.csproj
 ```
 
-Run the unit and integration test suite:
+Build the load balancer:
 
-```bash
+```powershell
+dotnet build src/EndJinx.LoadBalancer/EndJinx.LoadBalancer.csproj
+```
+
+Run all unit and integration tests:
+
+```powershell
 dotnet test EndJinx.Tests/EndJinx.Tests.csproj
 ```
 
-The tests cover request parsing, body-length validation, routing, response
-headers, concurrent connections, and multiple requests over one keep-alive
-connection.
+Run only the pool and strategy tests:
+
+```powershell
+dotnet test EndJinx.Tests/EndJinx.Tests.csproj --filter FullyQualifiedName~PoolSelectorTests
+```
+
+## Manual test: HTTP server
+
+Start the server in one terminal:
+
+```powershell
+dotnet run --project EndJinx.csproj
+```
+
+In another terminal, send requests:
+
+```powershell
+curl.exe -i http://127.0.0.1:8000/
+
+curl.exe -i -X POST http://127.0.0.1:8000/echo `
+  -H "Content-Type: text/plain" `
+  --data "hello from EndJinx"
+
+curl.exe -i http://127.0.0.1:8000/missing
+```
+
+Use `dotnet run --project EndJinx.csproj -- 8001` to run the server on another
+port. The same examples are available in `requests.http`.
+
+## Manual test: load balancer
+
+Use four terminals for a complete local test.
+
+1. Start two backend servers:
+
+   ```powershell
+   dotnet run --project EndJinx.csproj -- 8000
+   dotnet run --project EndJinx.csproj -- 8001
+   ```
+
+2. Start the load balancer in a third terminal:
+
+   ```powershell
+   dotnet run --project src/EndJinx.LoadBalancer -- 9000 8000 8001
+   ```
+
+   The first argument is the load-balancer port. Every remaining positional
+   argument is a backend port. The default strategy is round-robin.
+
+3. Send requests through the load balancer from the fourth terminal:
+
+   ```powershell
+   1..6 | ForEach-Object { curl.exe -s -i http://127.0.0.1:9000/ }
+   ```
+
+   Watch the load-balancer console to see which backend receives each TCP
+   connection.
+
+4. Try the other strategies by stopping the load balancer and restarting it:
+
+   ```powershell
+   dotnet run --project src/EndJinx.LoadBalancer -- 9000 8000 8001 --strategy random
+   dotnet run --project src/EndJinx.LoadBalancer -- 9000 8000 8001 --strategy least-connections
+   ```
+
+5. Test health recovery by stopping one backend. After the next five-second
+   health-check interval, the load balancer should stop selecting it. Restart
+   the backend and it should be selected again after it recovers.
+
+Stop each application with `Ctrl+C`.
 
 ## Load testing
 
-Start EndJinx first, then run one of the scripts from the repository root.
+Start the HTTP server first, then run one of the scripts from the repository
+root.
 
 PowerShell:
 
@@ -127,16 +196,4 @@ Bash:
 ./load-test.sh --keep-alive -l 25,100,250
 ```
 
-Both scripts report successes, failures, average latency, and throughput at
-several concurrency levels. The Bash script requires `curl`.
-
-## Design notes
-
-The parser, router, response builder, and logger are separate from the TCP
-accept loop so most behavior can be tested without real sockets. Each client
-is handled in its own task, while the connection handler owns the request
-loop, keep-alive decision, and per-connection cleanup.
-
-This project intentionally keeps the protocol surface small. Static files,
-TLS, chunked transfer encoding, richer HTTP methods, and load balancing are
-future work rather than supported features today.
+The scripts report successes, failures, average latency, and throughput.
