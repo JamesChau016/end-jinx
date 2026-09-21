@@ -28,7 +28,8 @@ while (true)
     Console.WriteLine($"Forwarding TCP connections to {backendObj.Host}:{backendObj.Port}");
     var proxy = new TcpProxy(
         backendObj,
-        failedBackend => selector.MarkUnHealthy(failedBackend)
+        failedBackend => selector.MarkUnHealthy(failedBackend),
+        completedBackend => selector.Release(completedBackend)
     );
     _ = Task.Run(() => proxy.HandleAsync(client));
     
@@ -76,8 +77,9 @@ static IBackendSelectionStrategy CreateStrategy(string strategyName)
     {
         "round-robin" => new RoundRobinSelectionStrategy(),
         "random" => new RandomSelectionStrategy(),
+        "least-connections" => new LeastConnectionsSelectionStrategy(),
         _ => throw new ArgumentException(
-            "The strategy must be 'round-robin' or 'random'.",
+            "The strategy must be 'round-robin', 'random', or 'least-connections'.",
             nameof(strategyName))
     };
 }

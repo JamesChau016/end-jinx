@@ -7,12 +7,17 @@ public sealed class TcpProxy
     private readonly string _backendHost;
     private readonly int _backendPort;
     private readonly Action<Backend>? _backendFailureHandler;
+    private readonly Action<Backend>? _backendCompletionHandler;
 
-    public TcpProxy(Backend backendObj, Action<Backend>? backendFailureHandler = null)
+    public TcpProxy(
+        Backend backendObj,
+        Action<Backend>? backendFailureHandler = null,
+        Action<Backend>? backendCompletionHandler = null)
     {
         _backendHost = backendObj.Host;
         _backendPort = backendObj.Port;
         _backendFailureHandler = backendFailureHandler;
+        _backendCompletionHandler = backendCompletionHandler;
     }
 
     public async Task HandleAsync(TcpClient client)
@@ -67,6 +72,10 @@ public sealed class TcpProxy
             catch (OperationCanceledException)
             {
                 // Cancellation is the normal shutdown path when either side closes.
+            }
+            finally
+            {
+                _backendCompletionHandler?.Invoke(new Backend(_backendHost, _backendPort));
             }
         }
     }

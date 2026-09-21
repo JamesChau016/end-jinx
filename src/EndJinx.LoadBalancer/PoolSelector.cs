@@ -16,14 +16,18 @@ public class Backend
 
 public interface IBackendSelectionStrategy
 {
-    Backend Select(IReadOnlyList<Backend> healthyBackends);
+    Backend Select(
+        IReadOnlyList<Backend> healthyBackends,
+        IReadOnlyDictionary<Backend, int> activeConnections);
 }
 
 public sealed class RoundRobinSelectionStrategy : IBackendSelectionStrategy
 {
     private int _next;
 
-    public Backend Select(IReadOnlyList<Backend> healthyBackends)
+    public Backend Select(
+        IReadOnlyList<Backend> healthyBackends,
+        IReadOnlyDictionary<Backend, int> activeConnections)
     {
         var backend = healthyBackends[_next];
         _next = (_next + 1) % healthyBackends.Count;
@@ -40,15 +44,30 @@ public sealed class RandomSelectionStrategy : IBackendSelectionStrategy
         _random = random ?? Random.Shared;
     }
 
-    public Backend Select(IReadOnlyList<Backend> healthyBackends)
+    public Backend Select(
+        IReadOnlyList<Backend> healthyBackends,
+        IReadOnlyDictionary<Backend, int> activeConnections)
     {
         return healthyBackends[_random.Next(healthyBackends.Count)];
+    }
+}
+
+public sealed class LeastConnectionsSelectionStrategy : IBackendSelectionStrategy
+{
+    public Backend Select(
+        IReadOnlyList<Backend> healthyBackends,
+        IReadOnlyDictionary<Backend, int> activeConnections)
+    {
+        return healthyBackends
+            .OrderBy(backend => activeConnections[backend])
+            .First();
     }
 }
 
 public class PoolSelector
 {
     private readonly List<Backend> _backends;
+    private readonly Dictionary<Backend, int> _activeConnections;
     private readonly IBackendSelectionStrategy _strategy;
     private readonly Lock _selectionLock = new();
 
@@ -64,6 +83,7 @@ public class PoolSelector
         _backends = backendObjs
             .Select(backend => new Backend(backend.Host, backend.Port, backend.IsHealthy))
             .ToList();
+        _activeConnections = _backends.ToDictionary(backend => backend, _ => 0);
         _strategy = strategy ?? new RoundRobinSelectionStrategy();
     }
 
@@ -85,7 +105,37 @@ public class PoolSelector
                 throw new InvalidOperationException("Error: Can't connect to any backends.");
             }
 
-            return _strategy.Select(healthyBackends);
+            var backend = _strategy.Select(healthyBackends, _activeConnections);
+            _activeConnections[backend]++;
+            return backend;
+        }
+    }
+
+    public void Release(Backend backend)
+    {
+        lock (_selectionLock)
+        {
+            var selectedBackend = FindBackend(backend);
+            if (!_activeConnections.TryGetValue(selectedBackend, out int activeConnections))
+            {
+                throw new ArgumentException("Backend is not part of this pool.", nameof(backend));
+            }
+
+            if (activeConnections == 0)
+            {
+                throw new InvalidOperationException("Backend has no active connections to release.");
+            }
+
+            _activeConnections[selectedBackend] = activeConnections - 1;
+        }
+    }
+
+    public int ActiveConnections(Backend backend)
+    {
+        lock (_selectionLock)
+        {
+            var selectedBackend = FindBackend(backend);
+            return _activeConnections[selectedBackend];
         }
     }
 
@@ -115,5 +165,13 @@ public class PoolSelector
             _backends[index].IsHealthy = isHealthy;
             return _backends[index];
         }
+    }
+
+    private Backend FindBackend(Backend backend)
+    {
+        return _backends.FirstOrDefault(existing =>
+            existing.Host == backend.Host &&
+            existing.Port == backend.Port)
+            ?? throw new ArgumentException("Backend is not part of this pool.", nameof(backend));
     }
 }

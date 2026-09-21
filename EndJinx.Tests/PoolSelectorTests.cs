@@ -23,6 +23,53 @@ public class PoolSelectorTests
     }
 
     [Fact]
+    public void Next_UsesRandomSelectionStrategy()
+    {
+        var selector = new PoolSelector([
+            new Backend("127.0.0.1", 8000),
+            new Backend("127.0.0.1", 8001),
+            new Backend("127.0.0.1", 8002)
+        ], new RandomSelectionStrategy(new FixedRandom(2, 0)));
+
+        var selectedPorts = Enumerable.Range(0, 2)
+            .Select(_ => selector.Next().Port)
+            .ToArray();
+
+        Assert.Equal([8002, 8000], selectedPorts);
+    }
+
+    [Fact]
+    public void Next_UsesLeastConnectionsStrategy()
+    {
+        var selector = new PoolSelector([
+            new Backend("127.0.0.1", 8000),
+            new Backend("127.0.0.1", 8001)
+        ], new LeastConnectionsSelectionStrategy());
+
+        var first = selector.Next();
+        var second = selector.Next();
+        var third = selector.Next();
+
+        Assert.Equal(8000, first.Port);
+        Assert.Equal(8001, second.Port);
+        Assert.Equal(8000, third.Port);
+        Assert.Equal(2, selector.ActiveConnections(first));
+        Assert.Equal(1, selector.ActiveConnections(second));
+
+        selector.Release(first);
+        Assert.Equal(1, selector.ActiveConnections(first));
+    }
+
+    [Fact]
+    public void Release_ThrowsWhenThereIsNoActiveConnection()
+    {
+        var selector = new PoolSelector([new Backend("127.0.0.1", 8000)]);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            selector.Release(new Backend("127.0.0.1", 8000)));
+    }
+
+    [Fact]
     public void Next_ReusesTheOnlyBackend()
     {
         var selector = new PoolSelector([new Backend("127.0.0.1", 8000)]);
@@ -105,5 +152,15 @@ public class PoolSelectorTests
         Assert.Equal(100, selectedPorts.Count(port => port == 8000));
         Assert.Equal(100, selectedPorts.Count(port => port == 8001));
         Assert.Equal(100, selectedPorts.Count(port => port == 8002));
+    }
+
+    private sealed class FixedRandom(params int[] values) : Random
+    {
+        private int _index;
+
+        public override int Next(int maxValue)
+        {
+            return values[_index++] % maxValue;
+        }
     }
 }
