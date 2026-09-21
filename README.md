@@ -47,8 +47,19 @@ implemented.
   - `least-connections`: chooses the healthy backend with the fewest active
     proxy connections.
 
-The load balancer is Layer 4: it routes connections and does not inspect HTTP
-paths or headers.
+The load balancer supports both Layer 4 TCP proxying and Layer 7 HTTP path
+routing. It loads listener, mode, pools, strategies, health checks, and routes
+from `config/load-balancer.yaml` by default:
+
+```powershell
+dotnet run --project src/EndJinx.LoadBalancer
+```
+
+Use another configuration file with `--config`. L4 is transparent TCP routing
+and requires one pool. L7 routes each HTTP connection by the first matching
+`pathPrefix` and can use multiple named pools. The current L7 implementation
+handles one request per connection and asks the backend to close after its
+response.
 
 ## File structure
 
@@ -64,10 +75,15 @@ Logger.cs                              Console logging abstraction
 
 src/EndJinx.LoadBalancer/
   EndJinx.LoadBalancer.csproj          Load balancer project
-  Program.cs                           Listener, strategy, and health-check setup
+  Program.cs                           YAML-driven listener and mode setup
+  LoadBalancerConfiguration.cs         YAML model, loading, and validation
   PoolSelector.cs                      Backend pool and selection strategies
   TcpProxy.cs                          Bidirectional TCP proxy
+  HttpProxy.cs                         Layer 7 HTTP path-routing proxy
   HealthCheck.cs                       Active backend health checks
+
+config/
+  load-balancer.yaml                   Default L4/L7 load-balancer settings
 
 EndJinx.Tests/
   ServerTests.cs                       HTTP parser, router, and response tests
@@ -147,11 +163,11 @@ Use four terminals for a complete local test.
 2. Start the load balancer in a third terminal:
 
    ```powershell
-   dotnet run --project src/EndJinx.LoadBalancer -- 9000 8000 8001
+   dotnet run --project src/EndJinx.LoadBalancer
    ```
 
-   The first argument is the load-balancer port. Every remaining positional
-   argument is a backend port. The default strategy is round-robin.
+The default YAML listens on port 9000 and uses backend ports 8000 and 8001.
+Change `config/load-balancer.yaml` to customize the pool or strategy.
 
 3. Send requests through the load balancer from the fourth terminal:
 
