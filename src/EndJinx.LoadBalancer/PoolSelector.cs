@@ -14,13 +14,47 @@ public class Backend
     }
 }
 
+public interface IBackendSelectionStrategy
+{
+    Backend Select(IReadOnlyList<Backend> healthyBackends);
+}
+
+public sealed class RoundRobinSelectionStrategy : IBackendSelectionStrategy
+{
+    private int _next;
+
+    public Backend Select(IReadOnlyList<Backend> healthyBackends)
+    {
+        var backend = healthyBackends[_next];
+        _next = (_next + 1) % healthyBackends.Count;
+        return backend;
+    }
+}
+
+public sealed class RandomSelectionStrategy : IBackendSelectionStrategy
+{
+    private readonly Random _random;
+
+    public RandomSelectionStrategy(Random? random = null)
+    {
+        _random = random ?? Random.Shared;
+    }
+
+    public Backend Select(IReadOnlyList<Backend> healthyBackends)
+    {
+        return healthyBackends[_random.Next(healthyBackends.Count)];
+    }
+}
+
 public class PoolSelector
 {
     private readonly List<Backend> _backends;
-    private int _next = 0;
+    private readonly IBackendSelectionStrategy _strategy;
     private readonly Lock _selectionLock = new();
 
-    public PoolSelector(List<Backend> backendObjs)
+    public PoolSelector(
+        List<Backend> backendObjs,
+        IBackendSelectionStrategy? strategy = null)
     {
         if (backendObjs.Count != backendObjs.Distinct().Count())
         {
@@ -30,6 +64,7 @@ public class PoolSelector
         _backends = backendObjs
             .Select(backend => new Backend(backend.Host, backend.Port, backend.IsHealthy))
             .ToList();
+        _strategy = strategy ?? new RoundRobinSelectionStrategy();
     }
 
     public Backend Next()
@@ -41,21 +76,16 @@ public class PoolSelector
                 throw new InvalidOperationException("Error: The backend pool is empty.");
             }
 
-            int attempts = 0;
-            while (attempts < _backends.Count)
-            {
-                var backend = _backends[_next];
-                if (backend.IsHealthy)
-                {
-                    _next = (_next + 1) % _backends.Count;
-                    return backend;
-                }
+            var healthyBackends = _backends
+                .Where(backend => backend.IsHealthy)
+                .ToList();
 
-                _next = (_next + 1) % _backends.Count;
-                attempts++;
+            if (healthyBackends.Count == 0)
+            {
+                throw new InvalidOperationException("Error: Can't connect to any backends.");
             }
 
-            throw new InvalidOperationException("Error: Can't connect to any backends.");
+            return _strategy.Select(healthyBackends);
         }
     }
 
