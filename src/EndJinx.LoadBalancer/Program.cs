@@ -2,73 +2,134 @@ using System.Net;
 using System.Net.Sockets;
 using EndJinx.LoadBalancer;
 
-var strategyName = GetOption(args, "--strategy") ?? "round-robin";
-var positionalArgs = args.Where((argument, index) =>
-    argument != "--strategy" && (index == 0 || args[index - 1] != "--strategy"));
-int listenPort = !positionalArgs.Any() ? 9000 : ParsePort(positionalArgs.First(), "load balancer");
-IEnumerable<int> backendPorts = positionalArgs.Count() <= 1
-    ? [8000, 8001]
-    : positionalArgs.Skip(1).Select(port => ParsePort(port, "backend"));
-List<Backend> pool = backendPorts
-    .Select(port => new Backend("127.0.0.1", port))
-    .ToList();
+var configurationPath = GetOption(args, "--config") ?? Path.Combine("config", "load-balancer.yaml");
+var configuration = LoadBalancerConfigurationLoader.Load(configurationPath);
+var selectors = configuration.Pools.ToDictionary(
+    pool => pool.Key,
+    pool => new PoolSelector(
+        pool.Value.Select(backend => new Backend(backend.Host, backend.Port)).ToList(),
+        CreateStrategy(configuration.Strategy)));
 
-var listener = new TcpListener(IPAddress.Any, listenPort);
-var selector = new PoolSelector(pool, CreateStrategy(strategyName));
-int interval = 5;
-
+var listenerAddress = ResolveAddress(configuration.Listen.Host);
+var listener = new TcpListener(listenerAddress, configuration.Listen.Port);
 listener.Start();
-_ = PeriodicHealthCheckAsync(selector, pool, interval);
-Console.WriteLine($"Load balancer listening on port {listenPort}");
+_ = PeriodicHealthCheckAsync(selectors, configuration.HealthCheck);
+
+Console.WriteLine(
+    $"Layer {configuration.Mode[1..].ToUpperInvariant()} load balancer listening on " +
+    $"{configuration.Listen.Host}:{configuration.Listen.Port} using {configuration.Strategy}");
 
 while (true)
 {
     TcpClient client = await listener.AcceptTcpClientAsync();
-    var backendObj = selector.Next();
-    Console.WriteLine($"Forwarding TCP connections to {backendObj.Host}:{backendObj.Port}");
-    var proxy = new TcpProxy(
-        backendObj,
-        failedBackend => selector.MarkUnHealthy(failedBackend),
-        completedBackend => selector.Release(completedBackend)
-    );
-    _ = Task.Run(() => proxy.HandleAsync(client));
-    
+    _ = Task.Run(() => HandleClientAsync(client, configuration, selectors));
 }
 
-static async Task PeriodicHealthCheckAsync(PoolSelector selector, List<Backend> pool, int interval){
+static async Task HandleClientAsync(
+    TcpClient client,
+    LoadBalancerConfiguration configuration,
+    IReadOnlyDictionary<string, PoolSelector> selectors)
+{
+    if (configuration.Mode == "l7")
+    {
+        var proxy = new HttpProxy(
+            configuration.Routes,
+            selectors,
+            failedBackend => MarkBackendUnhealthy(selectors, failedBackend),
+            completedBackend => ReleaseBackend(selectors, completedBackend));
+        await proxy.HandleAsync(client);
+        return;
+    }
 
-    var healthCheck = new HealthCheck();
+    var selector = selectors.Values.Single();
+    try
+    {
+        var backend = selector.Next();
+        Console.WriteLine($"Forwarding TCP connection to {backend.Host}:{backend.Port}");
+        var proxy = new TcpProxy(
+            backend,
+            failedBackend => selector.MarkUnHealthy(failedBackend),
+            completedBackend => selector.Release(completedBackend));
+        await proxy.HandleAsync(client);
+    }
+    catch (InvalidOperationException exception)
+    {
+        Console.Error.WriteLine(exception.Message);
+        client.Dispose();
+    }
+}
+
+static async Task PeriodicHealthCheckAsync(
+    IReadOnlyDictionary<string, PoolSelector> selectors,
+    HealthCheckConfiguration healthCheckConfiguration)
+{
+    var healthCheck = new HealthCheck(healthCheckConfiguration.TimeoutMilliseconds);
 
     while (true)
     {
-        foreach (var backend in pool)
+        foreach (var (poolName, selector) in selectors)
         {
-            var isHealthy = await healthCheck.CheckAsync(backend);
-
-            if (isHealthy){
-                if (!backend.IsHealthy){
-                    Console.WriteLine($"Backend port {backend.Port} recovered");
+            foreach (var backend in selector.Backends)
+            {
+                var isHealthy = await healthCheck.CheckAsync(backend);
+                if (isHealthy && !backend.IsHealthy)
+                {
+                    Console.WriteLine($"Backend {backend.Host}:{backend.Port} in pool '{poolName}' recovered");
+                    selector.MarkHealthy(backend);
                 }
-                selector.MarkHealthy(backend);
-            }
-            else{
-                selector.MarkUnHealthy(backend);
-                Console.WriteLine($"Backend port {backend.Port} marked unhealthy");
+                else if (!isHealthy && backend.IsHealthy)
+                {
+                    selector.MarkUnHealthy(backend);
+                    Console.WriteLine($"Backend {backend.Host}:{backend.Port} in pool '{poolName}' marked unhealthy");
+                }
             }
         }
 
-        await Task.Delay(TimeSpan.FromSeconds(interval));
+        await Task.Delay(TimeSpan.FromSeconds(healthCheckConfiguration.IntervalSeconds));
     }
 }
 
-static int ParsePort(string value, string name)
+static void MarkBackendUnhealthy(IReadOnlyDictionary<string, PoolSelector> selectors, Backend backend)
 {
-    if (!int.TryParse(value, out int port) || port is < 1 or > 65535)
+    foreach (var selector in selectors.Values)
     {
-        throw new ArgumentException($"The {name} port must be between 1 and 65535.", nameof(value));
+        selector.MarkUnHealthy(backend);
+    }
+}
+
+static void ReleaseBackend(IReadOnlyDictionary<string, PoolSelector> selectors, Backend backend)
+{
+    foreach (var selector in selectors.Values)
+    {
+        try
+        {
+            selector.Release(backend);
+            return;
+        }
+        catch (ArgumentException)
+        {
+            // This backend belongs to another pool.
+        }
+        catch (InvalidOperationException)
+        {
+            // This backend has already been released.
+        }
+    }
+}
+
+static IPAddress ResolveAddress(string host)
+{
+    if (host is "*" or "0.0.0.0")
+    {
+        return IPAddress.Any;
     }
 
-    return port;
+    if (host is "::" or "[::]")
+    {
+        return IPAddress.IPv6Any;
+    }
+
+    return IPAddress.Parse(host);
 }
 
 static IBackendSelectionStrategy CreateStrategy(string strategyName)
@@ -99,5 +160,3 @@ static string? GetOption(string[] arguments, string optionName)
 
     return arguments[optionIndex + 1];
 }
-
-
