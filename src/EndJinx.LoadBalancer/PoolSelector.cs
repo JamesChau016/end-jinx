@@ -149,6 +149,8 @@ public class PoolSelector
         return UpdateHealthState(backend, isHealthy: false);
     }
 
+    public IReadOnlyList<Backend> Backends => _backends;
+
     private Backend UpdateHealthState(Backend backend, bool isHealthy)
     {
         lock (_selectionLock)

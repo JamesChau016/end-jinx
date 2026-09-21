@@ -1,0 +1,25 @@
+mode: l4
+
+listen:
+  host: 0.0.0.0
+  port: 9000
+
+strategy: round-robin
+
+healthCheck:
+  intervalSeconds: 5
+  timeoutMilliseconds: 1000
+
+pools:
+  default:
+    - host: 127.0.0.1
+      port: 8000
+    - host: 127.0.0.1
+      port: 8001
+
+# Used only when mode is l7. Routes are checked in order.
+routes:
+  - pathPrefix: /api
+    pool: default
+  - pathPrefix: /
+    pool: default
