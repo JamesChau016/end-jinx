@@ -10,6 +10,10 @@
   <ItemGroup>
     <Compile Remove="EndJinx.Tests/**/*.cs" />
     <Compile Remove="src/**/*.cs" />
+    <Compile Remove="BenchmarkScratch/**/*.cs" />
+    <Compile Remove="BackendApis/**/*.cs" />
+    <Compile Remove="**/obj/**/*.cs" />
+    <Compile Remove="**/bin/**/*.cs" />
     <EmbeddedResource Remove="EndJinx.Tests/**/*.resx" />
     <None Remove="EndJinx.Tests/**/*" />
   </ItemGroup>

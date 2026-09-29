@@ -1,4 +1,4 @@
-mode: l7
+mode: l4
 
 listen:
   host: 0.0.0.0
@@ -11,17 +11,15 @@ healthCheck:
   timeoutMilliseconds: 1000
 
 pools:
-  api:
+  default:
     - host: 127.0.0.1
       port: 8000
-
-  static:
     - host: 127.0.0.1
       port: 8001
 
+# Used only when mode is l7. Routes are checked in order.
 routes:
   - pathPrefix: /api
-    pool: api
-
-  - pathPrefix: /static
-    pool: static
+    pool: default
+  - pathPrefix: /
+    pool: default
