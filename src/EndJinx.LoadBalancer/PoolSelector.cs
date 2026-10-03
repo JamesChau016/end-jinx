@@ -5,12 +5,14 @@ public class Backend
     public string Host { get; }
     public int Port { get; }
     public bool IsHealthy { get; set; } = true;
+    public int Weight { get; set; } = 1;
 
-    public Backend(string host, int port, bool isHealthy = true)
+    public Backend(string host, int port, bool isHealthy = true, int weight=1)
     {
         Host = host;
         Port = port;
         IsHealthy = isHealthy;
+        Weight = weight;
     }
 }
 
@@ -64,6 +66,34 @@ public sealed class LeastConnectionsSelectionStrategy : IBackendSelectionStrateg
     }
 }
 
+public sealed class WeightedRoundRobinStrategy : IBackendSelectionStrategy
+{
+    private readonly Dictionary<Backend, int> _currentWeights = new();
+
+    public Backend Select(
+        IReadOnlyList<Backend> healthyBackends,
+        IReadOnlyDictionary<Backend, int> activeConnections)
+    {
+        int totalWeights = 0;
+        foreach (var candidate in healthyBackends)
+        {
+            if (!_currentWeights.ContainsKey(candidate))
+            {
+                _currentWeights[candidate] = 0;
+            }
+
+            totalWeights += candidate.Weight;
+            _currentWeights[candidate] += candidate.Weight;
+        }
+
+        var backend = healthyBackends
+            .OrderByDescending(candidate => _currentWeights[candidate])
+            .First();
+        _currentWeights[backend] -= totalWeights;
+        return backend;
+    }
+}
+
 public class PoolSelector
 {
     private readonly List<Backend> _backends;
@@ -81,7 +111,7 @@ public class PoolSelector
         }
 
         _backends = backendObjs
-            .Select(backend => new Backend(backend.Host, backend.Port, backend.IsHealthy))
+            .Select(backend => new Backend(backend.Host, backend.Port, backend.IsHealthy, backend.Weight))
             .ToList();
         _activeConnections = _backends.ToDictionary(backend => backend, _ => 0);
         _strategy = strategy ?? new RoundRobinSelectionStrategy();
@@ -110,6 +140,7 @@ public class PoolSelector
             return backend;
         }
     }
+
 
     public void Release(Backend backend)
     {

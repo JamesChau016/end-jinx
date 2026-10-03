@@ -7,7 +7,10 @@ var configuration = LoadBalancerConfigurationLoader.Load(configurationPath);
 var selectors = configuration.Pools.ToDictionary(
     pool => pool.Key,
     pool => new PoolSelector(
-        pool.Value.Select(backend => new Backend(backend.Host, backend.Port)).ToList(),
+        pool.Value.Select(backend =>
+            configuration.Strategy.Equals("weighted-round-robin", StringComparison.OrdinalIgnoreCase)
+                ? new Backend(backend.Host, backend.Port) { Weight = backend.Weight }
+                : new Backend(backend.Host, backend.Port)).ToList(),
         CreateStrategy(configuration.Strategy)));
 
 var listenerAddress = ResolveAddress(configuration.Listen.Host);
@@ -137,10 +140,11 @@ static IBackendSelectionStrategy CreateStrategy(string strategyName)
     return strategyName.ToLowerInvariant() switch
     {
         "round-robin" => new RoundRobinSelectionStrategy(),
+        "weighted-round-robin" => new WeightedRoundRobinStrategy(),
         "random" => new RandomSelectionStrategy(),
         "least-connections" => new LeastConnectionsSelectionStrategy(),
         _ => throw new ArgumentException(
-            "The strategy must be 'round-robin', 'random', or 'least-connections'.",
+            "The strategy must be 'round-robin', 'weighted-round-robin', 'random', or 'least-connections'.",
             nameof(strategyName))
     };
 }

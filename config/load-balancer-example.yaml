@@ -14,6 +14,7 @@ pools:
   default:
     - host: 127.0.0.1
       port: 8000
+      weight: 5 # Used only when the strategy is weighted-round-robin
     - host: 127.0.0.1
       port: 8001
 

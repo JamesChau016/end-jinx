@@ -29,6 +29,7 @@ public sealed class BackendConfiguration
 {
     public string Host { get; set; } = "127.0.0.1";
     public int Port { get; set; }
+    public int Weight { get; set; } =1;
 }
 
 public sealed class RouteConfiguration
@@ -94,6 +95,11 @@ public static class LoadBalancerConfigurationLoader
             if (backends.Any(backend => backend.Port is < 1 or > 65535 || string.IsNullOrWhiteSpace(backend.Host)))
             {
                 throw new ArgumentException($"Backend pool '{name}' contains an invalid backend.");
+            }
+
+            if (configuration.Strategy.ToLowerInvariant() == "weighted-round-robin" && backends.Any(backend => backend.Weight is <= 0))
+            {
+                throw new ArgumentException($"Backends' weights must be greater than 0.");
             }
         }
 
