@@ -107,7 +107,9 @@ Logger.cs                              Console logging abstraction
 
 src/EndJinx.LoadBalancer/
   EndJinx.LoadBalancer.csproj          Load balancer project
-  Program.cs                           YAML-driven listener and mode setup
+  Program.cs                           Thin configuration and startup layer
+  LoadBalancerRuntime.cs               Listener, request dispatch, and health orchestration
+  SelectionStrategyFactory.cs          Strategy construction
   LoadBalancerConfiguration.cs         YAML model, loading, and validation
   PoolSelector.cs                      Backend pool and selection strategies
   TcpProxy.cs                          Bidirectional TCP proxy
