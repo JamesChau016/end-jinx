@@ -8,15 +8,41 @@ public sealed class LoadBalancerConfiguration
     public string Mode { get; set; } = "l4";
     public ListenerConfiguration Listen { get; set; } = new();
     public string Strategy { get; set; } = "round-robin";
+    public int TimeoutMilliseconds { get; set; } = 5000;
+    public int MaxRetries { get; set; } = 2;
+    public ProxyConfiguration Proxy { get; set; } = new();
     public HealthCheckConfiguration HealthCheck { get; set; } = new();
     public Dictionary<string, List<BackendConfiguration>> Pools { get; set; } = new();
     public List<RouteConfiguration> Routes { get; set; } = new();
+
+    public int EffectiveConnectionTimeoutMilliseconds =>
+        Proxy.ConnectionTimeoutMilliseconds > 0
+            ? Proxy.ConnectionTimeoutMilliseconds
+            : Proxy.TimeoutMilliseconds > 0
+                ? Proxy.TimeoutMilliseconds
+                : TimeoutMilliseconds > 0
+                    ? TimeoutMilliseconds
+                    : 5000;
+
+    public int EffectiveMaxRetries =>
+        Proxy.MaxRetries >= 0
+            ? Proxy.MaxRetries
+            : MaxRetries >= 0
+                ? MaxRetries
+                : 0;
 }
 
 public sealed class ListenerConfiguration
 {
     public string Host { get; set; } = "0.0.0.0";
     public int Port { get; set; } = 9000;
+}
+
+public sealed class ProxyConfiguration
+{
+    public int ConnectionTimeoutMilliseconds { get; set; } = 5000;
+    public int TimeoutMilliseconds { get; set; } = 5000;
+    public int MaxRetries { get; set; } = 2;
 }
 
 public sealed class HealthCheckConfiguration
@@ -73,6 +99,18 @@ public static class LoadBalancerConfigurationLoader
         if (configuration.HealthCheck.IntervalSeconds < 1 || configuration.HealthCheck.TimeoutMilliseconds < 1)
         {
             throw new ArgumentException("Health-check interval and timeout must be positive.");
+        }
+
+        var proxyTimeoutMilliseconds = configuration.EffectiveConnectionTimeoutMilliseconds;
+        if (proxyTimeoutMilliseconds < 1)
+        {
+            throw new ArgumentException("Proxy timeout must be positive.");
+        }
+
+        var maxRetries = configuration.EffectiveMaxRetries;
+        if (maxRetries < 0)
+        {
+            throw new ArgumentException("Proxy retry count cannot be negative.");
         }
 
         if (configuration.Pools.Count == 0)

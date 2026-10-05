@@ -6,6 +6,9 @@ listen:
 
 strategy: round-robin
 
+timeoutMilliseconds: 5000
+maxRetries: 2
+
 healthCheck:
   intervalSeconds: 5
   timeoutMilliseconds: 1000

@@ -8,33 +8,38 @@ public sealed class TcpProxy
     private readonly int _backendPort;
     private readonly Action<Backend>? _backendFailureHandler;
     private readonly Action<Backend>? _backendCompletionHandler;
+    private readonly int _timeoutMilliseconds;
 
     public TcpProxy(
         Backend backendObj,
         Action<Backend>? backendFailureHandler = null,
-        Action<Backend>? backendCompletionHandler = null)
+        Action<Backend>? backendCompletionHandler = null,
+        int timeoutMilliseconds = 5000)
     {
         _backendHost = backendObj.Host;
         _backendPort = backendObj.Port;
         _backendFailureHandler = backendFailureHandler;
         _backendCompletionHandler = backendCompletionHandler;
+        _timeoutMilliseconds = timeoutMilliseconds > 0 ? timeoutMilliseconds : 5000;
     }
 
-    public async Task HandleAsync(TcpClient client)
+    public async Task<bool> HandleAsync(TcpClient client)
     {
         using (client)
         using (var backend = new TcpClient())
         using (var shutdown = new CancellationTokenSource())
         {
+            var backendObject = new Backend(_backendHost, _backendPort);
             try
             {
-                await backend.ConnectAsync(_backendHost, _backendPort);
+                using var connectCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_timeoutMilliseconds));
+                await backend.ConnectAsync(_backendHost, _backendPort, connectCts.Token);
 
                 using NetworkStream clientStream = client.GetStream();
                 using NetworkStream backendStream = backend.GetStream();
 
-                Task<bool> clientToBackend = CopyAsync(clientStream, backendStream, shutdown.Token);
-                Task<bool> backendToClient = CopyAsync(backendStream, clientStream, shutdown.Token);
+                Task<bool> clientToBackend = CopyAsync(clientStream, backendStream, shutdown.Token, _timeoutMilliseconds);
+                Task<bool> backendToClient = CopyAsync(backendStream, clientStream, shutdown.Token, _timeoutMilliseconds);
 
                 Task completed = await Task.WhenAny(clientToBackend, backendToClient);
 
@@ -59,23 +64,28 @@ public sealed class TcpProxy
                 }
 
                 shutdown.Cancel();
+                return true;
             }
             catch (SocketException exception)
             {
                 Console.Error.WriteLine($"Backend connection failed: {exception.Message}");
-                _backendFailureHandler?.Invoke(new Backend(_backendHost, _backendPort));
+                _backendFailureHandler?.Invoke(backendObject);
+                return false;
             }
             catch (IOException exception)
             {
                 Console.Error.WriteLine($"Proxy connection failed: {exception.Message}");
+                return false;
             }
             catch (OperationCanceledException)
             {
-                // Cancellation is the normal shutdown path when either side closes.
+                Console.Error.WriteLine($"Backend request timed out after {_timeoutMilliseconds}ms.");
+                _backendFailureHandler?.Invoke(backendObject);
+                return false;
             }
             finally
             {
-                _backendCompletionHandler?.Invoke(new Backend(_backendHost, _backendPort));
+                _backendCompletionHandler?.Invoke(backendObject);
             }
         }
     }
@@ -99,12 +109,22 @@ public sealed class TcpProxy
     private static async Task<bool> CopyAsync(
         NetworkStream source,
         NetworkStream destination,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int timeoutMilliseconds)
     {
         try
         {
-            await source.CopyToAsync(destination, cancellationToken);
-            return true;
+            var buffer = new byte[8192];
+            while (true)
+            {
+                var read = await ReadWithTimeoutAsync(source, buffer, timeoutMilliseconds, cancellationToken);
+                if (read == 0)
+                {
+                    return true;
+                }
+
+                await WriteWithTimeoutAsync(destination, buffer.AsMemory(0, read), timeoutMilliseconds, cancellationToken);
+            }
         }
         catch (IOException)
         {
@@ -116,5 +136,27 @@ public sealed class TcpProxy
             // Cancellation is the normal shutdown path when the other copy ends.
             return false;
         }
+    }
+
+    private static async Task<int> ReadWithTimeoutAsync(
+        NetworkStream stream,
+        byte[] buffer,
+        int timeoutMilliseconds,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(timeoutMilliseconds));
+        return await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), timeoutCts.Token);
+    }
+
+    private static async Task WriteWithTimeoutAsync(
+        NetworkStream stream,
+        ReadOnlyMemory<byte> data,
+        int timeoutMilliseconds,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(timeoutMilliseconds));
+        await stream.WriteAsync(data, timeoutCts.Token);
     }
 }

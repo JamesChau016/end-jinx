@@ -20,7 +20,8 @@ _ = PeriodicHealthCheckAsync(selectors, configuration.HealthCheck);
 
 Console.WriteLine(
     $"Layer {configuration.Mode[1..].ToUpperInvariant()} load balancer listening on " +
-    $"{configuration.Listen.Host}:{configuration.Listen.Port} using {configuration.Strategy}");
+    $"{configuration.Listen.Host}:{configuration.Listen.Port} using {configuration.Strategy}" +
+    $" (timeout {configuration.EffectiveConnectionTimeoutMilliseconds}ms, retries {configuration.EffectiveMaxRetries})");
 
 while (true)
 {
@@ -39,7 +40,9 @@ static async Task HandleClientAsync(
             configuration.Routes,
             selectors,
             failedBackend => MarkBackendUnhealthy(selectors, failedBackend),
-            completedBackend => ReleaseBackend(selectors, completedBackend));
+            completedBackend => ReleaseBackend(selectors, completedBackend),
+            configuration.EffectiveConnectionTimeoutMilliseconds,
+            configuration.EffectiveMaxRetries);
         await proxy.HandleAsync(client);
         return;
     }
@@ -47,13 +50,28 @@ static async Task HandleClientAsync(
     var selector = selectors.Values.Single();
     try
     {
-        var backend = selector.Next();
-        Console.WriteLine($"Forwarding TCP connection to {backend.Host}:{backend.Port}");
-        var proxy = new TcpProxy(
-            backend,
-            failedBackend => selector.MarkUnHealthy(failedBackend),
-            completedBackend => selector.Release(completedBackend));
-        await proxy.HandleAsync(client);
+        for (var attempt = 0; attempt <= configuration.EffectiveMaxRetries; attempt++)
+        {
+            var backend = selector.Next();
+            Console.WriteLine($"Forwarding TCP connection to {backend.Host}:{backend.Port}");
+            var proxy = new TcpProxy(
+                backend,
+                failedBackend => selector.MarkUnHealthy(failedBackend),
+                completedBackend => selector.Release(completedBackend),
+                configuration.EffectiveConnectionTimeoutMilliseconds);
+
+            if (await proxy.HandleAsync(client))
+            {
+                return;
+            }
+
+            if (attempt == configuration.EffectiveMaxRetries)
+            {
+                Console.Error.WriteLine("No healthy backends remain for the TCP request.");
+                client.Dispose();
+                return;
+            }
+        }
     }
     catch (InvalidOperationException exception)
     {

@@ -10,31 +10,36 @@ public sealed class HttpProxy
     private readonly IReadOnlyDictionary<string, PoolSelector> _selectors;
     private readonly Action<Backend>? _backendFailureHandler;
     private readonly Action<Backend>? _backendCompletionHandler;
+    private readonly int _timeoutMilliseconds;
+    private readonly int _maxRetries;
 
     public HttpProxy(
         IReadOnlyList<RouteConfiguration> routes,
         IReadOnlyDictionary<string, PoolSelector> selectors,
         Action<Backend>? backendFailureHandler = null,
-        Action<Backend>? backendCompletionHandler = null)
+        Action<Backend>? backendCompletionHandler = null,
+        int timeoutMilliseconds = 5000,
+        int maxRetries = 2)
     {
         _routes = routes;
         _selectors = selectors;
         _backendFailureHandler = backendFailureHandler;
         _backendCompletionHandler = backendCompletionHandler;
+        _timeoutMilliseconds = timeoutMilliseconds > 0 ? timeoutMilliseconds : 5000;
+        _maxRetries = maxRetries >= 0 ? maxRetries : 0;
     }
 
-    public async Task HandleAsync(TcpClient client)
+    public async Task<bool> HandleAsync(TcpClient client)
     {
         using (client)
         {
-            Backend? backend = null;
             try
             {
                 using NetworkStream clientStream = client.GetStream();
-                var request = await ReadRequestAsync(clientStream);
+                var request = await ReadRequestAsync(clientStream, _timeoutMilliseconds);
                 if (request.Length == 0)
                 {
-                    return;
+                    return false;
                 }
 
                 var path = ParsePath(request);
@@ -42,54 +47,143 @@ public sealed class HttpProxy
                     candidate.PathPrefix, StringComparison.OrdinalIgnoreCase));
                 if (route is null || !_selectors.TryGetValue(route.Pool, out var selector))
                 {
-                    await WriteErrorAsync(clientStream, 404, "Not Found", "No route is configured for this path.");
-                    return;
+                    await WriteErrorAndCloseAsync(
+                        client,
+                        clientStream,
+                        404,
+                        "Not Found",
+                        "No route is configured for this path.",
+                        _timeoutMilliseconds);
+                    return false;
                 }
 
-                backend = selector.Next();
-                Console.WriteLine($"Routing {path} to {backend.Host}:{backend.Port} (pool '{route.Pool}')");
-                using var upstream = new TcpClient();
-                await upstream.ConnectAsync(backend.Host, backend.Port);
-                await using NetworkStream upstreamStream = upstream.GetStream();
+                for (var attempt = 0; attempt <= _maxRetries; attempt++)
+                {
+                    Backend? backend = null;
+                    TcpClient? upstream = null;
+                    try
+                    {
+                        backend = selector.Next();
+                        Console.WriteLine($"Routing {path} to {backend.Host}:{backend.Port} (pool '{route.Pool}')");
+                        upstream = new TcpClient();
+                        using var connectCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_timeoutMilliseconds));
+                        await upstream.ConnectAsync(backend.Host, backend.Port, connectCts.Token);
+                        using NetworkStream upstreamStream = upstream.GetStream();
 
-                await upstreamStream.WriteAsync(ForceConnectionClose(request));
-                await upstreamStream.CopyToAsync(clientStream);
-            }
-            catch (InvalidOperationException)
-            {
-                if (client.Connected)
-                {
-                    await WriteErrorAsync(client.GetStream(), 503, "Service Unavailable", "No healthy backend is available.");
-                }
-            }
-            catch (SocketException exception)
-            {
-                Console.Error.WriteLine($"HTTP backend connection failed: {exception.Message}");
-                if (backend is not null)
-                {
-                    _backendFailureHandler?.Invoke(backend);
-                }
+                        await WriteWithTimeoutAsync(upstreamStream, ForceConnectionClose(request), _timeoutMilliseconds);
+                        await CopyWithTimeoutAsync(upstreamStream, clientStream, _timeoutMilliseconds);
+                        return true;
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        if (client.Connected)
+                        {
+                            await WriteErrorAndCloseAsync(
+                                client,
+                                clientStream,
+                                503,
+                                "Service Unavailable",
+                                "No healthy backend is available.",
+                                _timeoutMilliseconds);
+                        }
 
-                if (client.Connected)
-                {
-                    await WriteErrorAsync(client.GetStream(), 502, "Bad Gateway", "The selected backend could not be reached.");
+                        return false;
+                    }
+                    catch (SocketException exception)
+                    {
+                        Console.Error.WriteLine($"HTTP backend connection failed: {exception.Message}");
+                        if (backend is not null)
+                        {
+                            _backendFailureHandler?.Invoke(backend);
+                            selector.MarkUnHealthy(backend);
+                        }
+
+                        if (attempt >= _maxRetries)
+                        {
+                            if (client.Connected)
+                            {
+                                await WriteErrorAndCloseAsync(
+                                    client,
+                                    clientStream,
+                                    502,
+                                    "Bad Gateway",
+                                    "The selected backend could not be reached.",
+                                    _timeoutMilliseconds);
+                            }
+
+                            return false;
+                        }
+                    }
+                    catch (OperationCanceledException exception)
+                    {
+                        Console.Error.WriteLine($"HTTP backend timed out after {_timeoutMilliseconds}ms: {exception.Message}");
+                        if (backend is not null)
+                        {
+                            _backendFailureHandler?.Invoke(backend);
+                            selector.MarkUnHealthy(backend);
+                        }
+
+                        if (attempt >= _maxRetries)
+                        {
+                            if (client.Connected)
+                            {
+                                await WriteErrorAndCloseAsync(
+                                    client,
+                                    clientStream,
+                                    504,
+                                    "Gateway Timeout",
+                                    "The selected backend did not respond in time.",
+                                    _timeoutMilliseconds);
+                            }
+
+                            return false;
+                        }
+                    }
+                    catch (IOException exception)
+                    {
+                        Console.Error.WriteLine($"HTTP proxy connection failed: {exception.Message}");
+                        if (backend is not null)
+                        {
+                            _backendFailureHandler?.Invoke(backend);
+                            selector.MarkUnHealthy(backend);
+                        }
+
+                        if (attempt >= _maxRetries)
+                        {
+                            if (client.Connected)
+                            {
+                                await WriteErrorAndCloseAsync(
+                                    client,
+                                    clientStream,
+                                    502,
+                                    "Bad Gateway",
+                                    "The selected backend could not be reached.",
+                                    _timeoutMilliseconds);
+                            }
+
+                            return false;
+                        }
+                    }
+                    finally
+                    {
+                        upstream?.Dispose();
+                        if (backend is not null)
+                        {
+                            _backendCompletionHandler?.Invoke(backend);
+                        }
+                    }
                 }
             }
             catch (IOException exception)
             {
                 Console.Error.WriteLine($"HTTP proxy connection failed: {exception.Message}");
             }
-            finally
-            {
-                if (backend is not null)
-                {
-                    _backendCompletionHandler?.Invoke(backend);
-                }
-            }
+
+            return false;
         }
     }
 
-    private static async Task<byte[]> ReadRequestAsync(NetworkStream stream)
+    private static async Task<byte[]> ReadRequestAsync(NetworkStream stream, int timeoutMilliseconds)
     {
         var bytes = new List<byte>();
         var buffer = new byte[1024];
@@ -98,7 +192,7 @@ public sealed class HttpProxy
 
         while (headerEnd < 0)
         {
-            var read = await stream.ReadAsync(buffer);
+            var read = await ReadWithTimeoutAsync(stream, buffer, timeoutMilliseconds);
             if (read == 0)
             {
                 return Array.Empty<byte>();
@@ -117,7 +211,7 @@ public sealed class HttpProxy
         var requestLength = headerEnd + marker.Length + contentLength;
         while (bytes.Count < requestLength)
         {
-            var read = await stream.ReadAsync(buffer);
+            var read = await ReadWithTimeoutAsync(stream, buffer, timeoutMilliseconds);
             if (read == 0)
             {
                 throw new IOException("HTTP request body ended early.");
@@ -127,6 +221,39 @@ public sealed class HttpProxy
         }
 
         return bytes.Take(requestLength).ToArray();
+    }
+
+    private static async Task CopyWithTimeoutAsync(
+        NetworkStream source,
+        NetworkStream destination,
+        int timeoutMilliseconds)
+    {
+        var buffer = new byte[8192];
+        while (true)
+        {
+            var read = await ReadWithTimeoutAsync(source, buffer, timeoutMilliseconds);
+            if (read == 0)
+            {
+                return;
+            }
+
+            await WriteWithTimeoutAsync(destination, buffer.AsMemory(0, read), timeoutMilliseconds);
+        }
+    }
+
+    private static async Task<int> ReadWithTimeoutAsync(NetworkStream stream, byte[] buffer, int timeoutMilliseconds)
+    {
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMilliseconds));
+        return await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), timeoutCts.Token);
+    }
+
+    private static async Task WriteWithTimeoutAsync(
+        NetworkStream stream,
+        ReadOnlyMemory<byte> data,
+        int timeoutMilliseconds)
+    {
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMilliseconds));
+        await stream.WriteAsync(data, timeoutCts.Token);
     }
 
     private static string ParsePath(byte[] request)
@@ -186,12 +313,25 @@ public sealed class HttpProxy
         return -1;
     }
 
-    private static async Task WriteErrorAsync(NetworkStream stream, int status, string reason, string message)
+    private static async Task WriteErrorAndCloseAsync(
+        TcpClient client,
+        NetworkStream stream,
+        int status,
+        string reason,
+        string message,
+        int timeoutMilliseconds)
     {
-        var body = Encoding.UTF8.GetBytes(message);
-        var response = Encoding.ASCII.GetBytes(
-            $"HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
-        await stream.WriteAsync(response);
-        await stream.WriteAsync(body);
+        try
+        {
+            var body = Encoding.UTF8.GetBytes(message);
+            var response = Encoding.ASCII.GetBytes(
+                $"HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+            await WriteWithTimeoutAsync(stream, response, timeoutMilliseconds);
+            await WriteWithTimeoutAsync(stream, body, timeoutMilliseconds);
+        }
+        finally
+        {
+            client.Close();
+        }
     }
 }
