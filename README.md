@@ -40,16 +40,19 @@ implemented.
 - Performs active health checks every five seconds.
 - Removes unhealthy backends and re-admits recovered backends.
 - Marks backends unhealthy after passive connection failures.
+- Enforces per-request backend timeouts and retries before failing a client request.
 - Tracks active TCP connections per backend.
-- Supports three selection strategies:
+- Supports four selection strategies:
   - `round-robin`: rotates through healthy backends.
+  - `weighted-round-robin`: uses smooth weighted round-robin to distribute
+    traffic according to each backend's positive `weight`.
   - `random`: chooses a healthy backend randomly.
   - `least-connections`: chooses the healthy backend with the fewest active
     proxy connections.
 
 The load balancer supports both Layer 4 TCP proxying and Layer 7 HTTP path
-routing. It loads listener, mode, pools, strategies, health checks, and routes
-from `config/load-balancer.yaml` by default:
+routing. It loads listener, mode, pools, strategies, health checks, timeouts,
+retries, and routes from `config/load-balancer.yaml` by default:
 
 ```powershell
 dotnet run --project src/EndJinx.LoadBalancer
@@ -60,6 +63,32 @@ and requires one pool. L7 routes each HTTP connection by the first matching
 `pathPrefix` and can use multiple named pools. The current L7 implementation
 handles one request per connection and asks the backend to close after its
 response.
+
+### Weighted round-robin
+
+Select the strategy with `strategy: weighted-round-robin` and set a positive
+integer `weight` for each backend. Higher weights receive proportionally more
+traffic while the smooth algorithm avoids sending all of one backend's traffic
+in a single burst:
+
+```yaml
+strategy: weighted-round-robin
+timeoutMilliseconds: 5000
+maxRetries: 2
+
+pools:
+  default:
+    - host: 127.0.0.1
+      port: 8000
+      weight: 5
+    - host: 127.0.0.1
+      port: 8001
+      weight: 1
+```
+
+In this example, backend `8000` receives approximately five requests for every
+request sent to backend `8001`. Weights must be greater than zero when this
+strategy is selected.
 
 ## File structure
 
