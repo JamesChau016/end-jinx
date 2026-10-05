@@ -4,6 +4,8 @@ using EndJinx.LoadBalancer;
 
 var configurationPath = GetOption(args, "--config") ?? Path.Combine("config", "load-balancer.yaml");
 var configuration = LoadBalancerConfigurationLoader.Load(configurationPath);
+var logger = new LoadBalancerLogger();
+var metrics = new LoadBalancerMetrics();
 var selectors = configuration.Pools.ToDictionary(
     pool => pool.Key,
     pool => new PoolSelector(
@@ -13,26 +15,33 @@ var selectors = configuration.Pools.ToDictionary(
                 : new Backend(backend.Host, backend.Port)).ToList(),
         CreateStrategy(configuration.Strategy)));
 
+foreach (var selector in selectors.Values)
+{
+    foreach (var backend in selector.Backends)
+    {
+        metrics.RegisterBackend(backend);
+    }
+}
+
 var listenerAddress = ResolveAddress(configuration.Listen.Host);
 var listener = new TcpListener(listenerAddress, configuration.Listen.Port);
 listener.Start();
-_ = PeriodicHealthCheckAsync(selectors, configuration.HealthCheck);
+_ = PeriodicHealthCheckAsync(selectors, configuration.HealthCheck, metrics, logger);
 
-Console.WriteLine(
-    $"Layer {configuration.Mode[1..].ToUpperInvariant()} load balancer listening on " +
-    $"{configuration.Listen.Host}:{configuration.Listen.Port} using {configuration.Strategy}" +
-    $" (timeout {configuration.EffectiveConnectionTimeoutMilliseconds}ms, retries {configuration.EffectiveMaxRetries})");
+logger.LogStartup(configuration);
 
 while (true)
 {
     TcpClient client = await listener.AcceptTcpClientAsync();
-    _ = Task.Run(() => HandleClientAsync(client, configuration, selectors));
+    _ = Task.Run(() => HandleClientAsync(client, configuration, selectors, metrics, logger));
 }
 
 static async Task HandleClientAsync(
     TcpClient client,
     LoadBalancerConfiguration configuration,
-    IReadOnlyDictionary<string, PoolSelector> selectors)
+    IReadOnlyDictionary<string, PoolSelector> selectors,
+    LoadBalancerMetrics metrics,
+    LoadBalancerLogger logger)
 {
     if (configuration.Mode == "l7")
     {
@@ -41,8 +50,15 @@ static async Task HandleClientAsync(
             selectors,
             failedBackend => MarkBackendUnhealthy(selectors, failedBackend),
             completedBackend => ReleaseBackend(selectors, completedBackend),
-            configuration.EffectiveConnectionTimeoutMilliseconds,
-            configuration.EffectiveMaxRetries);
+            requestObserver: (backend, duration, succeeded) =>
+            {
+                metrics.RequestCompleted(backend, duration, succeeded);
+                logger.LogRequest("HTTP", backend, duration, succeeded);
+            },
+            timeoutMilliseconds: configuration.EffectiveConnectionTimeoutMilliseconds,
+            maxRetries: configuration.EffectiveMaxRetries,
+            logger: logger,
+            connectionStartedObserver: metrics.ConnectionStarted);
         await proxy.HandleAsync(client);
         return;
     }
@@ -53,12 +69,19 @@ static async Task HandleClientAsync(
         for (var attempt = 0; attempt <= configuration.EffectiveMaxRetries; attempt++)
         {
             var backend = selector.Next();
-            Console.WriteLine($"Forwarding TCP connection to {backend.Host}:{backend.Port}");
+            metrics.ConnectionStarted(backend);
+            logger.LogRouting("TCP", backend);
             var proxy = new TcpProxy(
                 backend,
                 failedBackend => selector.MarkUnHealthy(failedBackend),
                 completedBackend => selector.Release(completedBackend),
-                configuration.EffectiveConnectionTimeoutMilliseconds);
+                (completedBackend, duration, succeeded) =>
+                {
+                    metrics.RequestCompleted(completedBackend, duration, succeeded);
+                    logger.LogRequest("TCP", completedBackend, duration, succeeded);
+                },
+                configuration.EffectiveConnectionTimeoutMilliseconds,
+                logger);
 
             if (await proxy.HandleAsync(client))
             {
@@ -67,7 +90,7 @@ static async Task HandleClientAsync(
 
             if (attempt == configuration.EffectiveMaxRetries)
             {
-                Console.Error.WriteLine("No healthy backends remain for the TCP request.");
+                logger.LogFailure("No healthy backends remain for the TCP request.");
                 client.Dispose();
                 return;
             }
@@ -75,14 +98,16 @@ static async Task HandleClientAsync(
     }
     catch (InvalidOperationException exception)
     {
-        Console.Error.WriteLine(exception.Message);
+        logger.LogFailure(exception.Message);
         client.Dispose();
     }
 }
 
 static async Task PeriodicHealthCheckAsync(
     IReadOnlyDictionary<string, PoolSelector> selectors,
-    HealthCheckConfiguration healthCheckConfiguration)
+    HealthCheckConfiguration healthCheckConfiguration,
+    LoadBalancerMetrics metrics,
+    LoadBalancerLogger logger)
 {
     var healthCheck = new HealthCheck(healthCheckConfiguration.TimeoutMilliseconds);
 
@@ -95,13 +120,15 @@ static async Task PeriodicHealthCheckAsync(
                 var isHealthy = await healthCheck.CheckAsync(backend);
                 if (isHealthy && !backend.IsHealthy)
                 {
-                    Console.WriteLine($"Backend {backend.Host}:{backend.Port} in pool '{poolName}' recovered");
+                    logger.LogHealthChange(poolName, backend, isHealthy: true);
                     selector.MarkHealthy(backend);
+                    metrics.SetHealth(backend, isHealthy: true);
                 }
                 else if (!isHealthy && backend.IsHealthy)
                 {
                     selector.MarkUnHealthy(backend);
-                    Console.WriteLine($"Backend {backend.Host}:{backend.Port} in pool '{poolName}' marked unhealthy");
+                    metrics.SetHealth(backend, isHealthy: false);
+                    logger.LogHealthChange(poolName, backend, isHealthy: false);
                 }
             }
         }

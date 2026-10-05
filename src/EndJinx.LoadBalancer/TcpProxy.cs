@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using System.Diagnostics;
 
 namespace EndJinx.LoadBalancer;
 
@@ -8,18 +9,24 @@ public sealed class TcpProxy
     private readonly int _backendPort;
     private readonly Action<Backend>? _backendFailureHandler;
     private readonly Action<Backend>? _backendCompletionHandler;
+    private readonly Action<Backend, TimeSpan, bool>? _requestObserver;
+    private readonly LoadBalancerLogger? _logger;
     private readonly int _timeoutMilliseconds;
 
     public TcpProxy(
         Backend backendObj,
         Action<Backend>? backendFailureHandler = null,
         Action<Backend>? backendCompletionHandler = null,
-        int timeoutMilliseconds = 5000)
+        Action<Backend, TimeSpan, bool>? requestObserver = null,
+        int timeoutMilliseconds = 5000,
+        LoadBalancerLogger? logger = null)
     {
         _backendHost = backendObj.Host;
         _backendPort = backendObj.Port;
         _backendFailureHandler = backendFailureHandler;
         _backendCompletionHandler = backendCompletionHandler;
+        _requestObserver = requestObserver;
+        _logger = logger;
         _timeoutMilliseconds = timeoutMilliseconds > 0 ? timeoutMilliseconds : 5000;
     }
 
@@ -30,6 +37,8 @@ public sealed class TcpProxy
         using (var shutdown = new CancellationTokenSource())
         {
             var backendObject = new Backend(_backendHost, _backendPort);
+            var started = Stopwatch.GetTimestamp();
+            var succeeded = false;
             try
             {
                 using var connectCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_timeoutMilliseconds));
@@ -64,27 +73,32 @@ public sealed class TcpProxy
                 }
 
                 shutdown.Cancel();
+                succeeded = true;
                 return true;
             }
             catch (SocketException exception)
             {
-                Console.Error.WriteLine($"Backend connection failed: {exception.Message}");
+                _logger?.LogFailure($"Backend connection failed: {exception.Message}");
                 _backendFailureHandler?.Invoke(backendObject);
                 return false;
             }
             catch (IOException exception)
             {
-                Console.Error.WriteLine($"Proxy connection failed: {exception.Message}");
+                _logger?.LogFailure($"Proxy connection failed: {exception.Message}");
                 return false;
             }
             catch (OperationCanceledException)
             {
-                Console.Error.WriteLine($"Backend request timed out after {_timeoutMilliseconds}ms.");
+                _logger?.LogFailure($"Backend request timed out after {_timeoutMilliseconds}ms.");
                 _backendFailureHandler?.Invoke(backendObject);
                 return false;
             }
             finally
             {
+                _requestObserver?.Invoke(
+                    backendObject,
+                    Stopwatch.GetElapsedTime(started),
+                    succeeded);
                 _backendCompletionHandler?.Invoke(backendObject);
             }
         }

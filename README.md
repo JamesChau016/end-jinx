@@ -42,6 +42,9 @@ implemented.
 - Marks backends unhealthy after passive connection failures.
 - Enforces per-request backend timeouts and retries before failing a client request.
 - Tracks active TCP connections per backend.
+- Logs backend routing decisions, request durations, failures, and health changes.
+- Maintains thread-safe per-backend request, failure, active-connection, and duration
+  metrics in a dedicated observability module.
 - Supports four selection strategies:
   - `round-robin`: rotates through healthy backends.
   - `weighted-round-robin`: uses smooth weighted round-robin to distribute
@@ -110,6 +113,8 @@ src/EndJinx.LoadBalancer/
   TcpProxy.cs                          Bidirectional TCP proxy
   HttpProxy.cs                         Layer 7 HTTP path-routing proxy
   HealthCheck.cs                       Active backend health checks
+  LoadBalancerLogger.cs                Load-balancer-specific console logging
+  LoadBalancerMetrics.cs               Thread-safe backend observability counters
 
 config/
   load-balancer.yaml                   Default L4/L7 load-balancer settings

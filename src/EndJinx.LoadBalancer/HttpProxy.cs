@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 
@@ -10,6 +11,9 @@ public sealed class HttpProxy
     private readonly IReadOnlyDictionary<string, PoolSelector> _selectors;
     private readonly Action<Backend>? _backendFailureHandler;
     private readonly Action<Backend>? _backendCompletionHandler;
+    private readonly Action<Backend>? _connectionStartedObserver;
+    private readonly Action<Backend, TimeSpan, bool>? _requestObserver;
+    private readonly LoadBalancerLogger? _logger;
     private readonly int _timeoutMilliseconds;
     private readonly int _maxRetries;
 
@@ -18,13 +22,19 @@ public sealed class HttpProxy
         IReadOnlyDictionary<string, PoolSelector> selectors,
         Action<Backend>? backendFailureHandler = null,
         Action<Backend>? backendCompletionHandler = null,
+        Action<Backend, TimeSpan, bool>? requestObserver = null,
         int timeoutMilliseconds = 5000,
-        int maxRetries = 2)
+        int maxRetries = 2,
+        LoadBalancerLogger? logger = null,
+        Action<Backend>? connectionStartedObserver = null)
     {
         _routes = routes;
         _selectors = selectors;
         _backendFailureHandler = backendFailureHandler;
         _backendCompletionHandler = backendCompletionHandler;
+        _connectionStartedObserver = connectionStartedObserver;
+        _requestObserver = requestObserver;
+        _logger = logger;
         _timeoutMilliseconds = timeoutMilliseconds > 0 ? timeoutMilliseconds : 5000;
         _maxRetries = maxRetries >= 0 ? maxRetries : 0;
     }
@@ -61,10 +71,13 @@ public sealed class HttpProxy
                 {
                     Backend? backend = null;
                     TcpClient? upstream = null;
+                    var started = Stopwatch.GetTimestamp();
+                    var succeeded = false;
                     try
                     {
                         backend = selector.Next();
-                        Console.WriteLine($"Routing {path} to {backend.Host}:{backend.Port} (pool '{route.Pool}')");
+                        _connectionStartedObserver?.Invoke(backend);
+                        _logger?.LogRouting("HTTP", backend, $"path={path}, pool={route.Pool}");
                         upstream = new TcpClient();
                         using var connectCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_timeoutMilliseconds));
                         await upstream.ConnectAsync(backend.Host, backend.Port, connectCts.Token);
@@ -72,6 +85,7 @@ public sealed class HttpProxy
 
                         await WriteWithTimeoutAsync(upstreamStream, ForceConnectionClose(request), _timeoutMilliseconds);
                         await CopyWithTimeoutAsync(upstreamStream, clientStream, _timeoutMilliseconds);
+                        succeeded = true;
                         return true;
                     }
                     catch (InvalidOperationException)
@@ -91,7 +105,7 @@ public sealed class HttpProxy
                     }
                     catch (SocketException exception)
                     {
-                        Console.Error.WriteLine($"HTTP backend connection failed: {exception.Message}");
+                        _logger?.LogFailure($"HTTP backend connection failed: {exception.Message}");
                         if (backend is not null)
                         {
                             _backendFailureHandler?.Invoke(backend);
@@ -116,7 +130,7 @@ public sealed class HttpProxy
                     }
                     catch (OperationCanceledException exception)
                     {
-                        Console.Error.WriteLine($"HTTP backend timed out after {_timeoutMilliseconds}ms: {exception.Message}");
+                        _logger?.LogFailure($"HTTP backend timed out after {_timeoutMilliseconds}ms: {exception.Message}");
                         if (backend is not null)
                         {
                             _backendFailureHandler?.Invoke(backend);
@@ -141,7 +155,7 @@ public sealed class HttpProxy
                     }
                     catch (IOException exception)
                     {
-                        Console.Error.WriteLine($"HTTP proxy connection failed: {exception.Message}");
+                        _logger?.LogFailure($"HTTP proxy connection failed: {exception.Message}");
                         if (backend is not null)
                         {
                             _backendFailureHandler?.Invoke(backend);
@@ -169,6 +183,10 @@ public sealed class HttpProxy
                         upstream?.Dispose();
                         if (backend is not null)
                         {
+                            _requestObserver?.Invoke(
+                                backend,
+                                Stopwatch.GetElapsedTime(started),
+                                succeeded);
                             _backendCompletionHandler?.Invoke(backend);
                         }
                     }
