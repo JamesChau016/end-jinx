@@ -41,6 +41,53 @@ public class HttpProxyIntegrationTests
         Assert.Contains("api response", responseText);
     }
 
+    [Fact]
+    public async Task Proxy_RetriesNextHealthyBackend_WhenSelectedBackendTimesOut()
+    {
+        using var slowBackendListener = new TcpListener(IPAddress.Loopback, 0);
+        slowBackendListener.Start();
+        var slowBackendPort = ((IPEndPoint)slowBackendListener.LocalEndpoint).Port;
+
+        using var healthyBackendListener = new TcpListener(IPAddress.Loopback, 0);
+        healthyBackendListener.Start();
+        var healthyBackendPort = ((IPEndPoint)healthyBackendListener.LocalEndpoint).Port;
+
+        using var proxyListener = new TcpListener(IPAddress.Loopback, 0);
+        proxyListener.Start();
+
+        var selector = new PoolSelector([
+            new Backend("127.0.0.1", slowBackendPort),
+            new Backend("127.0.0.1", healthyBackendPort)
+        ]);
+
+        var proxy = new HttpProxy(
+            [new RouteConfiguration { PathPrefix = "/api", Pool = "api" }],
+            new Dictionary<string, PoolSelector> { ["api"] = selector },
+            timeoutMilliseconds: 250,
+            maxRetries: 1);
+
+        var slowBackendTask = AcceptSlowBackendAndRespondAsync(slowBackendListener);
+        var healthyBackendTask = AcceptBackendAndRespondAsync(healthyBackendListener);
+        var proxyTask = AcceptProxyClientAsync(proxyListener, proxy);
+
+        using var client = new TcpClient();
+        var proxyAddress = (IPEndPoint)proxyListener.LocalEndpoint;
+        await client.ConnectAsync(proxyAddress.Address, proxyAddress.Port);
+        await using var clientStream = client.GetStream();
+        await clientStream.WriteAsync(Encoding.ASCII.GetBytes(
+            "GET /api/items HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"));
+
+        using var responseBuffer = new MemoryStream();
+        await clientStream.CopyToAsync(responseBuffer);
+
+        await Task.WhenAll(slowBackendTask, healthyBackendTask, proxyTask);
+
+        var responseText = Encoding.ASCII.GetString(responseBuffer.ToArray());
+        Assert.Contains("200 OK", responseText);
+        Assert.Contains("api response", responseText);
+    }
+
+
     private static async Task AcceptBackendAndRespondAsync(TcpListener listener)
     {
         using var backend = await listener.AcceptTcpClientAsync();
@@ -48,6 +95,19 @@ public class HttpProxyIntegrationTests
         var request = await ReadUntilHeadersAsync(stream);
         Assert.StartsWith("GET /api/items", Encoding.ASCII.GetString(request));
         Assert.Contains("Connection: close", Encoding.ASCII.GetString(request));
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(
+            "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\napi response"));
+    }
+
+    private static async Task AcceptSlowBackendAndRespondAsync(TcpListener listener)
+    {
+        using var backend = await listener.AcceptTcpClientAsync();
+        await using var stream = backend.GetStream();
+        var request = await ReadUntilHeadersAsync(stream);
+        Assert.StartsWith("GET /api/items", Encoding.ASCII.GetString(request));
+        Assert.Contains("Connection: close", Encoding.ASCII.GetString(request));
+
+        await Task.Delay(1000);
         await stream.WriteAsync(Encoding.ASCII.GetBytes(
             "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\napi response"));
     }
@@ -71,4 +131,5 @@ public class HttpProxyIntegrationTests
 
         return bytes.ToArray();
     }
+
 }

@@ -61,6 +61,34 @@ public class PoolSelectorTests
     }
 
     [Fact]
+    public void Next_UsesSmoothWeightedRoundRobinStrategy()
+    {
+        var selector = new PoolSelector([
+            new Backend("127.0.0.1", 8000, weight: 5),
+            new Backend("127.0.0.1", 8001, weight: 1)
+        ], new WeightedRoundRobinStrategy());
+
+        var selectedPorts = Enumerable.Range(0, 6)
+            .Select(_ => selector.Next().Port)
+            .ToArray();
+
+        Assert.Equal([8000, 8000, 8000, 8001, 8000, 8000], selectedPorts);
+    }
+
+    [Fact]
+    public void Next_WeightedRoundRobinSkipsUnhealthyBackends()
+    {
+        var selector = new PoolSelector([
+            new Backend("127.0.0.1", 8000, weight: 5),
+            new Backend("127.0.0.1", 8001, weight: 1)
+        ], new WeightedRoundRobinStrategy());
+
+        selector.MarkUnHealthy(new Backend("127.0.0.1", 8000));
+
+        Assert.Equal(8001, selector.Next().Port);
+    }
+
+    [Fact]
     public void Release_ThrowsWhenThereIsNoActiveConnection()
     {
         var selector = new PoolSelector([new Backend("127.0.0.1", 8000)]);
