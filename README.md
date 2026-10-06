@@ -249,3 +249,18 @@ Bash:
 ```
 
 The scripts report successes, failures, average latency, and throughput.
+
+For an isolated load-balancer benchmark, build both projects and run
+`benchmark.ps1` with one strategy at a time:
+
+```powershell
+.\benchmark.ps1 --strategy round-robin
+.\benchmark.ps1 --strategy weighted-round-robin
+.\benchmark.ps1 --strategy random
+.\benchmark.ps1 --strategy least-connections
+```
+
+The benchmark starts two local backends and a load balancer, performs a warm-up,
+then reports requests per second, p50/p99 latency, successes, and failures.
+Use `-Requests`, `-Concurrency`, `-WarmupRequests`, or `--keep-alive` to adjust
+the run.
