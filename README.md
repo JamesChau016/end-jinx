@@ -1,84 +1,80 @@
+<div align="center">
+
 # EndJinx
 
-EndJinx is a learning project containing two small C# networking applications:
+### A hands-on C# networking project: an HTTP/1.1 server and configurable load balancer built on TCP sockets.
 
-- A raw TCP HTTP/1.1 web server.
-- A Layer 4 TCP load balancer that proxies connections to a pool of web-server
-  instances.
+![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
+![C#](https://img.shields.io/badge/C%23-networking-239120?logo=csharp&logoColor=white)
+![TCP](https://img.shields.io/badge/TCP-proxying-244c5a)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-The project focuses on HTTP framing, parsing, connection lifecycle,
-concurrency, reverse-proxying, backend health, and load-balancing algorithms
-without using Kestrel, ASP.NET Core, `HttpListener`, or a proxy framework.
+[Overview](#overview) | [Features](#features) | [Quick start](#quick-start) | [How it works](#how-it-works) | [Testing](#testing) | [License](#license)
 
-## Requirements
+</div>
 
-- .NET SDK 10.0 or later
-- `curl` for manual requests and load tests
-- PowerShell 5.1 or later for `load-test.ps1`
+## Overview
+
+EndJinx contains two small applications designed to make the work behind web servers and proxies easier to explore. It handles HTTP framing, connection lifecycle, concurrency, backend health, and load distribution directly, without Kestrel, ASP.NET Core, `HttpListener`, or a proxy framework.
+
+| Application | What it does | Default port |
+| --- | --- | ---: |
+| HTTP server | Serves `GET /` and echoes `POST /echo` | `8000` |
+| Load balancer | Forwards TCP traffic or routes HTTP paths to backend pools | `9000` |
+
+## Quick start
+
+**Requirements:** .NET SDK 10 or later. `curl` is useful for manual requests; PowerShell 5.1 or later is needed for the PowerShell scripts.
+
+Build and run the HTTP server:
+
+```powershell
+dotnet build EndJinx.csproj
+dotnet run --project EndJinx.csproj
+```
+
+In another terminal, try the available routes:
+
+```powershell
+curl.exe -i http://127.0.0.1:8000/
+curl.exe -i -X POST http://127.0.0.1:8000/echo -H "Content-Type: text/plain" --data "hello from EndJinx"
+```
+
+Run the automated tests with:
+
+```powershell
+dotnet test EndJinx.Tests/EndJinx.Tests.csproj
+```
 
 ## Features
 
 ### HTTP server
 
-- Listens on `0.0.0.0:8000` by default; the port is configurable.
-- Handles multiple TCP clients concurrently.
-- Parses request headers and `Content-Length` request bodies.
-- Supports HTTP/1.1 keep-alive and multiple requests per connection.
-- Times out incomplete or idle reads after five seconds.
-- Limits headers to 8 KiB and request bodies to 1 MiB.
-- Returns `400`, `404`, `413`, and `500` responses for supported error cases.
-- Provides `GET /` and `POST /echo` routes.
+- Concurrent TCP clients and HTTP/1.1 keep-alive, including multiple requests on one connection.
+- Request headers and `Content-Length` bodies, with five-second read timeouts, an 8 KiB header limit, and a 1 MiB body limit.
+- Simple routing and responses for common errors (`400`, `404`, `413`, and `500`).
 
-TLS, static files, chunked transfer encoding, and richer HTTP methods are not
-implemented.
+TLS, static files, chunked transfer encoding, and broader HTTP method support are outside the current scope.
+
+## How it works
 
 ### Load balancer
 
-- Listens on port `9000` by default.
-- Proxies raw TCP bytes in both directions between clients and backends.
-- Supports multiple backend ports supplied at startup.
-- Performs active health checks every five seconds.
-- Removes unhealthy backends and re-admits recovered backends.
-- Marks backends unhealthy after passive connection failures.
-- Enforces per-request backend timeouts and retries before failing a client request.
-- Tracks active TCP connections per backend.
-- Logs backend routing decisions, request durations, failures, and health changes.
-- Maintains thread-safe per-backend request, failure, active-connection, and duration
-  metrics in a dedicated observability module.
-- Supports four selection strategies:
-  - `round-robin`: rotates through healthy backends.
-  - `weighted-round-robin`: uses smooth weighted round-robin to distribute
-    traffic according to each backend's positive `weight`.
-  - `random`: chooses a healthy backend randomly.
-  - `least-connections`: chooses the healthy backend with the fewest active
-    proxy connections.
+The load balancer supports transparent Layer 4 TCP proxying and Layer 7 HTTP path routing. It checks backend health every five seconds, marks backends unhealthy after connection failures, retries failed backend attempts, and records per-backend connection and request metrics.
 
-The load balancer supports both Layer 4 TCP proxying and Layer 7 HTTP path
-routing. It loads listener, mode, pools, strategies, health checks, timeouts,
-retries, and routes from `config/load-balancer.yaml` by default:
+Choose a backend selection strategy in `config/load-balancer.yaml`:
 
-```powershell
-dotnet run --project src/EndJinx.LoadBalancer
-```
+| Strategy | Behavior |
+| --- | --- |
+| `round-robin` | Rotates across healthy backends |
+| `weighted-round-robin` | Distributes traffic according to each backend's positive `weight` |
+| `random` | Picks a healthy backend at random |
+| `least-connections` | Picks the backend with the fewest active proxy connections |
 
-Use another configuration file with `--config`. L4 is transparent TCP routing
-and requires one pool. L7 routes each HTTP connection by the first matching
-`pathPrefix` and can use multiple named pools. The current L7 implementation
-handles one request per connection and asks the backend to close after its
-response.
-
-### Weighted round-robin
-
-Select the strategy with `strategy: weighted-round-robin` and set a positive
-integer `weight` for each backend. Higher weights receive proportionally more
-traffic while the smooth algorithm avoids sending all of one backend's traffic
-in a single burst:
+Weighted example:
 
 ```yaml
 strategy: weighted-round-robin
-timeoutMilliseconds: 5000
-maxRetries: 2
-
 pools:
   default:
     - host: 127.0.0.1
@@ -89,169 +85,50 @@ pools:
       weight: 1
 ```
 
-In this example, backend `8000` receives approximately five requests for every
-request sent to backend `8001`. Weights must be greater than zero when this
-strategy is selected.
+With these weights, backend `8000` receives about five requests for every request sent to `8001`. The smooth algorithm spreads selections over time instead of sending traffic in one large burst. Weights must be positive for this strategy.
 
-## File structure
+The default configuration is `config/load-balancer.yaml`. Start the balancer with `dotnet run --project src/EndJinx.LoadBalancer`; pass `--config <path>` to load another YAML file. Layer 4 mode uses one pool. Layer 7 mode selects a named pool using the first matching `pathPrefix` and currently handles one request per connection, closing the backend connection after its response.
 
-```text
-EndJinx.csproj                         HTTP server project
-Program.cs                             HTTP server listener and accept loop
-HttpConnection.cs                      Per-client HTTP connection lifecycle
-RequestParser.cs                       HTTP request framing and parsing
-ResponseBuilder.cs                     HTTP response serialization
-Router.cs                              HTTP method/path routing
-Exceptions.cs                          HTTP exception types and status codes
-Logger.cs                              Console logging abstraction
+## Try the load balancer
 
-src/EndJinx.LoadBalancer/
-  EndJinx.LoadBalancer.csproj          Load balancer project
-  Program.cs                           Thin configuration and startup layer
-  LoadBalancerRuntime.cs               Listener, request dispatch, and health orchestration
-  SelectionStrategyFactory.cs          Strategy construction
-  LoadBalancerConfiguration.cs         YAML model, loading, and validation
-  PoolSelector.cs                      Backend pool and selection strategies
-  TcpProxy.cs                          Bidirectional TCP proxy
-  HttpProxy.cs                         Layer 7 HTTP path-routing proxy
-  HealthCheck.cs                       Active backend health checks
-  LoadBalancerLogger.cs                Load-balancer-specific console logging
-  LoadBalancerMetrics.cs               Thread-safe backend observability counters
-
-config/
-  load-balancer.yaml                   Default L4/L7 load-balancer settings
-
-EndJinx.Tests/
-  ServerTests.cs                       HTTP parser, router, and response tests
-  ConnectionIntegrationTests.cs        HTTP connection integration tests
-  LoadBalancerIntegrationTests.cs      TCP proxy integration tests
-  PoolSelectorTests.cs                 Pool, health, and strategy tests
-
-requests.http                          Sample HTTP requests for VS Code
-load-test.ps1                          PowerShell load test
-load-test.sh                           Bash and curl load test
-LEARNING_PLAN.md                       HTTP server learning plan
-LOAD_BALANCER_LEARNING_PLAN.md         Load balancer learning plan
-```
-
-## Build and automated tests
-
-Run these commands from the repository root.
-
-Build the HTTP server:
+Open three terminals and start two backend servers plus the balancer:
 
 ```powershell
-dotnet build EndJinx.csproj
+# Terminal 1
+dotnet run --project EndJinx.csproj -- 8000
+
+# Terminal 2
+dotnet run --project EndJinx.csproj -- 8001
+
+# Terminal 3
+dotnet run --project src/EndJinx.LoadBalancer
 ```
 
-Build the load balancer:
+The default YAML sends traffic from port `9000` to ports `8000` and `8001`. In a fourth terminal, make several requests and watch the balancer log its routing decisions:
 
 ```powershell
-dotnet build src/EndJinx.LoadBalancer/EndJinx.LoadBalancer.csproj
+1..6 | ForEach-Object { curl.exe -s -i http://127.0.0.1:9000/ }
 ```
 
-Run all unit and integration tests:
+Stop one backend to observe health checks remove it from rotation, then restart it to see it re-admitted. Stop the applications with `Ctrl+C`.
 
-```powershell
-dotnet test EndJinx.Tests/EndJinx.Tests.csproj
-```
+## Testing
 
-Run only the pool and strategy tests:
+Build the load balancer independently with `dotnet build src/EndJinx.LoadBalancer/EndJinx.LoadBalancer.csproj`. To run only pool and strategy tests:
 
 ```powershell
 dotnet test EndJinx.Tests/EndJinx.Tests.csproj --filter FullyQualifiedName~PoolSelectorTests
 ```
 
-## Manual test: HTTP server
-
-Start the server in one terminal:
-
-```powershell
-dotnet run --project EndJinx.csproj
-```
-
-In another terminal, send requests:
-
-```powershell
-curl.exe -i http://127.0.0.1:8000/
-
-curl.exe -i -X POST http://127.0.0.1:8000/echo `
-  -H "Content-Type: text/plain" `
-  --data "hello from EndJinx"
-
-curl.exe -i http://127.0.0.1:8000/missing
-```
-
-Use `dotnet run --project EndJinx.csproj -- 8001` to run the server on another
-port. The same examples are available in `requests.http`.
-
-## Manual test: load balancer
-
-Use four terminals for a complete local test.
-
-1. Start two backend servers:
-
-   ```powershell
-   dotnet run --project EndJinx.csproj -- 8000
-   dotnet run --project EndJinx.csproj -- 8001
-   ```
-
-2. Start the load balancer in a third terminal:
-
-   ```powershell
-   dotnet run --project src/EndJinx.LoadBalancer
-   ```
-
-The default YAML listens on port 9000 and uses backend ports 8000 and 8001.
-Change `config/load-balancer.yaml` to customize the pool or strategy.
-
-3. Send requests through the load balancer from the fourth terminal:
-
-   ```powershell
-   1..6 | ForEach-Object { curl.exe -s -i http://127.0.0.1:9000/ }
-   ```
-
-   Watch the load-balancer console to see which backend receives each TCP
-   connection.
-
-4. Try the other strategies by stopping the load balancer and restarting it:
-
-   ```powershell
-   dotnet run --project src/EndJinx.LoadBalancer -- 9000 8000 8001 --strategy random
-   dotnet run --project src/EndJinx.LoadBalancer -- 9000 8000 8001 --strategy least-connections
-   ```
-
-5. Test health recovery by stopping one backend. After the next five-second
-   health-check interval, the load balancer should stop selecting it. Restart
-   the backend and it should be selected again after it recovers.
-
-Stop each application with `Ctrl+C`.
-
 ## Load testing
 
-Start the HTTP server first, then run one of the scripts from the repository
-root.
-
-PowerShell:
+Run the HTTP load test from the repository root:
 
 ```powershell
-.\load-test.ps1
 .\load-test.ps1 -ConcurrencyLevels @(10, 50, 100) -RequestsPerLevel 500
-.\load-test.ps1 -KeepConnectionsOpen
 ```
 
-Bash:
-
-```bash
-./load-test.sh
-./load-test.sh -l 10,50,100 -n 500
-./load-test.sh --keep-alive -l 25,100,250
-```
-
-The scripts report successes, failures, average latency, and throughput.
-
-For an isolated load-balancer benchmark, build both projects and run
-`benchmark.ps1` with one strategy at a time:
+Or use the Bash script with `./load-test.sh -l 10,50,100 -n 500`. Both scripts report successes, failures, average latency, and throughput. `benchmark.ps1` runs a separate load-balancer benchmark. Choose one strategy per run:
 
 ```powershell
 .\benchmark.ps1 --strategy round-robin
@@ -260,7 +137,20 @@ For an isolated load-balancer benchmark, build both projects and run
 .\benchmark.ps1 --strategy least-connections
 ```
 
-The benchmark starts two local backends and a load balancer, performs a warm-up,
-then reports requests per second, p50/p99 latency, successes, and failures.
-Use `-Requests`, `-Concurrency`, `-WarmupRequests`, or `--keep-alive` to adjust
-the run.
+The benchmark reports throughput, p50/p99 latency, successes, and failures. Adjust it with `-Requests`, `-Concurrency`, `-WarmupRequests`, or `--keep-alive`.
+
+## Repository map
+
+```text
+./                         HTTP server project and shared server code
+src/EndJinx.LoadBalancer/  Load balancer application
+EndJinx.Tests/             Unit and integration tests (xUnit)
+config/                    Example load-balancer YAML configuration
+BackendApis/               Supporting backend API sample
+```
+
+See [AGENTS.md](AGENTS.md) for contributor conventions. Configuration examples live in `config/`; benchmark and load-test scripts are in the repository root.
+
+## License
+
+EndJinx is available under the [MIT License](LICENSE).
